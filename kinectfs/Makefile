@@ -4,8 +4,8 @@ kinectfs: main.o
 	gcc -o kinectfs main.o -lixp -lfreenect -lfreenect_sync
 
 clean:
-	rm -f kinectfs *.o *~
+	rm -f kinectfs depthtoppm *.o *~
 
-depthtorgb: depthtorgb.c
-	gcc -o depthtorgb depthtorgb.c -lm -g
+depthtoppm: depthtoppm.c
+	gcc -o depthtoppm depthtoppm.c -lm -g
 
