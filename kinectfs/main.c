@@ -4,10 +4,16 @@
 #include <limits.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
-#include <png.h>
+#include "fids.h"
 
+char *paths[] = { "/", "rgb", "depth", "tilt", "led", "audio", NULL };
+unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0 };
+unsigned long atimes[] = { 0, 0, 0, 0, 0, 0 };
 int tilt;
 int led;
+unsigned char *audio[4];
+size_t audiolengths[4];
+unsigned int audioclients = 0;
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
 //#define debug(...) {}; 
@@ -17,48 +23,7 @@ typedef struct {
 	void* image;
 	unsigned long length;
 } FrnctImg;
-
-static int fnametopath(char *name);
-typedef struct _FidAux {
-	char		*name;
-	uint8_t		type;
-	uint32_t 	version;
-	uint64_t	path;
-	int		offset;
-} FidAux;
-char *paths[] = { "/", "rgb", "depth", "tilt", "led", "audio", NULL };
-long mtimes[] = { 0, 0, 0, 0, 0, 0 };
-long atimes[] = { 0, 0, 0, 0, 0, 0 };
-static FidAux* newfidaux(char *name, IxpQid *qid) {
-	FidAux *ret;
-
-	ret = calloc (1, sizeof(FidAux));
-	ret->type = qid->type;
-	ret->version = qid->version;
-	ret->path = fnametopath(name);
-	ret->name = paths[ret->path];
-
-	return ret;
-}
-static int fnametopath(char *name) {
-	int i;
-	char *p = name;
-	char *q;
-
-	while (*p == '/')
-		p++;
-
-	for (i = 0; paths[i] != NULL; i++) {
-		q = paths[i];
-		while (*q == '/')
-			q++;
-
-		if (strcasecmp(p, q) == 0)
-			return (i);
-	}
-
-	return -1;
-}
+static freenect_device *f_dev;
 
 // have epsilon seconds passed since last?
 // if so, update last and return 1;
@@ -134,8 +99,6 @@ static void fs_walk(Ixp9Req *r)
 	int path;
 
 	if (r->ifcall.twalk.nwname == 0) {
-		debug ("fs_walk (zero-length)\n");
-
 		path = 0;
 	} else if (r->ifcall.twalk.nwname != 1) {
 		respond (r, "no such file");
@@ -143,23 +106,19 @@ static void fs_walk(Ixp9Req *r)
 	} else {
 		path = fnametopath(r->ifcall.twalk.wname[0]);
 		if (path < 0) {
-			if (!strcmp(r->ifcall.twalk.wname[0], ".")) {
-				path = r->fid->qid.path;
-			} else {
-				respond (r, "no such file");
-				return;
-			}
+			respond (r, "no such file");
+			return;
 		}
 	}
 
-	r->ofcall.rwalk.wqid[0].version = r->fid->qid.version;
+	debug ("fs_walk path:%d name:%s\n", path, paths[path]);
+
+	r->ofcall.rwalk.wqid[0].version = 0;
 	r->ofcall.rwalk.wqid[0].path = path;
 	if (path == 0)
 		r->ofcall.rwalk.wqid[0].type = P9_QTDIR;
 	else
 		r->ofcall.rwalk.wqid[0].type = P9_QTFILE;
-
-	debug ("fs_walk path:%d name:%s\n", path, paths[path]);
 
 	r->newfid->aux = newfidaux(paths[path], &r->ofcall.rwalk.wqid[0]);
 	r->ofcall.rwalk.nwqid = 1;
@@ -263,6 +222,17 @@ static void fs_read(Ixp9Req *r)
 		respond (r, NULL);
 		return;
 	case 5:
+//		size = r->ifcall.tread.count;
+//		buf = malloc (size);
+
+//		if (f->offset == 0) {
+//			if (audioclients == 0)
+//				freenect_start_audio (f_dev);
+
+//			audioclients++;
+//		}
+
+//		respond(r, NULL);
 		respond(r, "unimplemented");
 		return;
 	case 3:
@@ -319,6 +289,8 @@ static void fs_stat(Ixp9Req *r)
 	int size;
 	char *buf;
 
+	debug ("fs_stat fid:%d\n", r->fid->fid);
+
 	if (f == NULL) {
 		respond (r, "fs_stat (f == NULL)");
 		return;
@@ -333,8 +305,6 @@ static void fs_stat(Ixp9Req *r)
 	r->ofcall.rstat.stat = m.data;
 	r->fid->qid = stat.qid;
 	respond(r, NULL);
-
-	debug ("fs_stat name:%s path:%d\n", f->name, f->path);
 }
 
 static void fs_write(Ixp9Req *r)
@@ -412,7 +382,7 @@ static void fs_attach(Ixp9Req *r)
 	r->fid->qid.type = P9_QTDIR;
 	r->fid->qid.version = 0;
 	r->fid->qid.path = 0;
-	r->fid->aux = newfidaux("", &r->fid->qid);
+	r->fid->aux = newfidaux("/", &r->fid->qid);
 	r->ofcall.rattach.qid = r->fid->qid;
 
 	debug ("fs_attach fid:%u\n", r->fid->fid);
@@ -467,15 +437,47 @@ Ixp9Srv p9srv = {
 	.wstat		= fs_wstat,
 };
 
+void
+freenect_do_one (long ms, void *aux)
+{
+	struct timeval tv = { 0, 0 };
+	if (freenect_process_events_timeout ((freenect_context*)aux, &tv) < 0) {
+		fprintf (stderr, "freenect_process_events\n");
+		exit (-1);
+	}
+	ixp_settimer(&server, 1, freenect_do_one, aux);
+}
+
 int
 main(int argc, char *argv[]) {
 	int fd;
 	IxpConn *acceptor;
+	freenect_context *f_ctx;
 
 	if (argc != 2) {
 		fprintf (stderr, "usage:\n\t%s proto!addr[!port]\n", argv[0]);
 		return -1;
 	}
+
+	if (freenect_init (&f_ctx, NULL) < 0) {
+		perror ("freenect_init");
+		return -1;
+	}
+	freenect_select_subdevices (f_ctx, FREENECT_DEVICE_AUDIO);
+
+	if (freenect_num_devices (f_ctx) < 1) {
+		fprintf (stderr, "kinect not found\n");
+		freenect_shutdown (f_ctx);
+		return -1;
+	}
+
+	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
+		fprintf (stderr, "could not open kinect audio\n");
+		freenect_shutdown (f_ctx);
+		return -1;
+	}
+
+	freenect_sync_set_led (led, 0);
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
@@ -483,10 +485,14 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 
+	ixp_settimer(&server, 1, freenect_do_one, f_ctx);
+
 	acceptor = ixp_listen(&server, fd, &p9srv, serve_9pcon, NULL);
 
 	ixp_serverloop(&server);
 	fprintf (stderr, "%s\n", ixp_errbuf());
+
+	freenect_shutdown (f_ctx);
 
 	return -1;
 }
