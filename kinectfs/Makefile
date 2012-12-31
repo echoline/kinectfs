@@ -5,3 +5,7 @@ kinectfs: main.o
 
 clean:
 	rm -f kinectfs *.o *~
+
+depthtorgb: depthtorgb.c
+	gcc -o depthtorgb depthtorgb.c -lm -g
+

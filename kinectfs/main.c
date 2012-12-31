@@ -15,6 +15,7 @@ int led;
 typedef struct {
 	struct timeval last;
 	void* image;
+	unsigned long length;
 } FrnctImg;
 
 static int fnametopath(char *name);
@@ -177,7 +178,8 @@ static void fs_read(Ixp9Req *r)
 	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
 	static struct timeval lasttilt = { 0, 0 };
-	static FrnctImg imgs[2];
+	static FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 3 },
+				    { { 0, 0 }, NULL, 640 * 480 * 2 } };
 	int i;
 	uint32_t ts;
 
@@ -217,7 +219,7 @@ static void fs_read(Ixp9Req *r)
 		respond (r, NULL);
 		return;
 	case 1:
-#define RGBSIZE 640 * 480 * 3
+	case 2:
 		size = r->ifcall.tread.count;
 		buf = malloc (size);
 		i = f->path - 1;
@@ -225,7 +227,7 @@ static void fs_read(Ixp9Req *r)
 		if (istime(&(imgs[i].last), 1)) {
 			if (imgs[i].image)
 				free (imgs[i].image);
-			imgs[i].image = malloc (RGBSIZE);
+			imgs[i].image = malloc (imgs[i].length);
 			if (i == 0?
 					freenect_sync_get_video(
 						(void**)&imgs[i].image, &ts, 0,
@@ -247,7 +249,7 @@ static void fs_read(Ixp9Req *r)
 				return;
 			}
 		}
-		r->ofcall.rread.count = RGBSIZE - r->ifcall.tread.offset;
+		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
 		if (r->ofcall.rread.count < 0)
 			r->ofcall.rread.count = 0;
 		if (size < r->ofcall.rread.count)
@@ -260,7 +262,6 @@ static void fs_read(Ixp9Req *r)
 
 		respond (r, NULL);
 		return;
-	case 2:
 	case 5:
 		respond(r, "unimplemented");
 		return;
