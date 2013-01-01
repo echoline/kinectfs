@@ -12,8 +12,8 @@ unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 int tilt;
 int led;
-unsigned char *audio[4];
-size_t audiolengths[4];
+unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
+size_t audiolengths[4] = { 0, 0, 0, 0 };
 unsigned int audioclients = 0;
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
@@ -85,6 +85,43 @@ dostat(char *name, IxpStat *stat) {
 	stat->uid = stat->gid = stat->muid = none;
 
 	return ixp_sizeof_stat(stat);
+}
+
+void
+in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
+		int32_t *mic1, int32_t *mic2, int32_t *mic3,
+		int16_t *cancelled, void *unknown) {
+	int i;
+	int length;
+	int32_t *mic;
+
+	if (audioclients > 0) for (i = 0; i < 4; i++) {
+		switch (i) {
+		case 0:
+			mic = mic0;
+			break;
+		case 1:
+			mic = mic1;
+			break;
+		case 2:
+			mic = mic2;
+			break;
+		case 3:
+			mic = mic3;
+			break;
+		}
+
+		length = num_samples * sizeof (int32_t);
+		audiolengths[i] += length;
+		audio[i] = realloc (audio[i], audiolengths[i]);
+		memcpy(&audio[i][audiolengths[i] - length], mic, length);
+	} else for (i = 0; i < 4; i++) {
+		if (audio[i] != NULL) {
+			free(audio[i]);
+			audio[i] = NULL;
+			audiolengths[i] = 0;
+		}
+	}
 }
 
 static void fs_open(Ixp9Req *r)
@@ -263,11 +300,21 @@ static void fs_read(Ixp9Req *r)
 	case 6:
 	case 7:
 	case 8:
+		i = path - 5;
+
 		size = r->ifcall.tread.count;
 		buf = malloc (size);
 
+		if (size > audiolengths[i])
+			size = audiolengths[i];
+
+		memcpy (buf, &audio[i][audiolengths[i] - size], size);
+		audiolengths[i] = 0;
+
+		r->ofcall.rread.data = buf;
+		r->ofcall.rread.count = size;
+
 		respond(r, NULL);
-//		respond(r, "unimplemented");
 		return;
 	case 3:
 		if (f->offset == 0) {
@@ -427,10 +474,10 @@ static void fs_clunk(Ixp9Req *r)
 	case 6:
 	case 7:
 	case 8:
+		audioclients--;
+
 		if (audioclients == 0)
 			freenect_stop_audio (f_dev);
-
-		audioclients++;
 	default:
 		break;
 	}
@@ -550,6 +597,7 @@ main(int argc, char *argv[]) {
 	}
 
 	freenect_sync_set_led (led, 0);
+	freenect_set_audio_in_callback (f_dev, in_callback);
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
