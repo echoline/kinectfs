@@ -89,7 +89,30 @@ dostat(char *name, IxpStat *stat) {
 
 static void fs_open(Ixp9Req *r)
 {
+	FidAux *f = r->fid->aux;
+	int path;
+
 	debug ("fs_open\n");
+
+	if (f == NULL) {
+		respond (r, "fs_open (f == NULL)");
+		return;
+	}
+
+	path = fnametopath(f->name);
+
+	switch (path) {
+	case 5:
+	case 6:
+	case 7:
+	case 8:
+		if (audioclients == 0)
+			freenect_start_audio (f_dev);
+
+		audioclients++;
+	default:
+		break;
+	}
 
 	respond (r, NULL);
 }
@@ -240,18 +263,11 @@ static void fs_read(Ixp9Req *r)
 	case 6:
 	case 7:
 	case 8:
-//		size = r->ifcall.tread.count;
-//		buf = malloc (size);
+		size = r->ifcall.tread.count;
+		buf = malloc (size);
 
-//		if (f->offset == 0) {
-//			if (audioclients == 0)
-//				freenect_start_audio (f_dev);
-
-//			audioclients++;
-//		}
-
-//		respond(r, NULL);
-		respond(r, "unimplemented");
+		respond(r, NULL);
+//		respond(r, "unimplemented");
 		return;
 	case 3:
 		if (f->offset == 0) {
@@ -394,7 +410,30 @@ static void fs_write(Ixp9Req *r)
 
 static void fs_clunk(Ixp9Req *r)
 {
+	FidAux *f = r->fid->aux;
+	int path;
+
 	debug ("fs_clunk fid:%d\n", r->fid->fid);
+
+	if (f == NULL) {
+		respond (r, "fs_clunk (f == NULL)");
+		return;
+	}
+
+	path = fnametopath(f->name);
+
+	switch (path) {
+	case 5:
+	case 6:
+	case 7:
+	case 8:
+		if (audioclients == 0)
+			freenect_stop_audio (f_dev);
+
+		audioclients++;
+	default:
+		break;
+	}
 
 	respond (r, NULL);
 }
