@@ -28,14 +28,11 @@ fnametopath(char *name) {
 }
 
 FidAux*
-newfidaux(char *name, IxpQid *qid) {
+newfidaux(char *name) {
 	FidAux *ret;
 
 	ret = calloc (1, sizeof(FidAux));
-	ret->type = qid->type;
-	ret->version = qid->version;
-	ret->path = fnametopath(name);
-	ret->name = paths[ret->path];
+	ret->name = paths[fnametopath(name)];
 
 	return ret;
 }

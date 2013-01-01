@@ -6,9 +6,10 @@
 #include <libfreenect_sync.h>
 #include "fids.h"
 
-char *paths[] = { "/", "rgb", "depth", "tilt", "led", "audio", NULL };
-unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0 };
-unsigned long atimes[] = { 0, 0, 0, 0, 0, 0 };
+char *paths[] = { "/", "rgb", "depth", "tilt", "led",
+	"audio0", "audio1", "audio2", "audio3", NULL };
+unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 int tilt;
 int led;
 unsigned char *audio[4];
@@ -63,7 +64,7 @@ dostat(char *name, IxpStat *stat) {
 
 	stat->type = 0;
 	stat->dev = 0;
-	stat->qid.type = path? P9_QTFILE: P9_QTDIR;
+	stat->qid.type = (path != 0? P9_QTFILE: P9_QTDIR);
 	stat->qid.version = 0;
 	stat->qid.path = path;
 	stat->mode = P9_DMREAD;
@@ -97,21 +98,28 @@ static void fs_walk(Ixp9Req *r)
 {
 	char *name = malloc (PATH_MAX);
 	int path;
+	FidAux *f = r->fid->aux;
+
+	if (f == NULL) {
+		respond (r, "fs_walk (f == NULL)");
+		return;
+	}
 
 	if (r->ifcall.twalk.nwname == 0) {
-		path = 0;
+		path = fnametopath(f->name);
 	} else if (r->ifcall.twalk.nwname != 1) {
 		respond (r, "no such file");
 		return;
+	} else if (strcmp(r->ifcall.twalk.wname[0], "..") == 0) {
+		path = 0;
 	} else {
 		path = fnametopath(r->ifcall.twalk.wname[0]);
-		if (path < 0) {
-			respond (r, "no such file");
-			return;
-		}
 	}
 
-	debug ("fs_walk path:%d name:%s\n", path, paths[path]);
+	if (path < 0) {
+		respond (r, "no such file");
+		return;
+	}
 
 	r->ofcall.rwalk.wqid[0].version = 0;
 	r->ofcall.rwalk.wqid[0].path = path;
@@ -120,8 +128,11 @@ static void fs_walk(Ixp9Req *r)
 	else
 		r->ofcall.rwalk.wqid[0].type = P9_QTFILE;
 
-	r->newfid->aux = newfidaux(paths[path], &r->ofcall.rwalk.wqid[0]);
+	r->newfid->aux = newfidaux(paths[path]);
 	r->ofcall.rwalk.nwqid = 1;
+
+	debug ("fs_walk fid:%d newfid:%d name:%s\n", r->fid->fid, 
+			r->newfid->fid, paths[path]);
 
 	respond(r, NULL);
 }
@@ -133,6 +144,7 @@ static void fs_read(Ixp9Req *r)
 	IxpMsg m;
 	char *buf;
 	int n, size;
+	int path;
 
 	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
@@ -143,15 +155,18 @@ static void fs_read(Ixp9Req *r)
 	uint32_t ts;
 
 	debug ("fs_read offset:%d\n", r->ifcall.tread.offset);
+
 	if (f == NULL) {
 		respond(r, "fs_read (fid->aux == NULL)\n");
 		return;
 	}
 
+	path = fnametopath(f->name);
+
 	if (r->ifcall.tread.offset == 0)
 		f->offset = 0;
 
-	switch (f->path) {
+	switch (path) {
 	case 0:
 		f->offset++;
 
@@ -181,7 +196,7 @@ static void fs_read(Ixp9Req *r)
 	case 2:
 		size = r->ifcall.tread.count;
 		buf = malloc (size);
-		i = f->path - 1;
+		i = path - 1;
 
 		if (istime(&(imgs[i].last), 1)) {
 			if (imgs[i].image)
@@ -222,6 +237,9 @@ static void fs_read(Ixp9Req *r)
 		respond (r, NULL);
 		return;
 	case 5:
+	case 6:
+	case 7:
+	case 8:
 //		size = r->ifcall.tread.count;
 //		buf = malloc (size);
 
@@ -254,7 +272,7 @@ static void fs_read(Ixp9Req *r)
 			r->ofcall.rread.data = buf;
 
 			f->offset++;
-			atimes[f->path] = time(NULL);
+			atimes[path] = time(NULL);
 		} else {
 			r->ofcall.rread.count = 0;
 		}
@@ -270,7 +288,7 @@ static void fs_read(Ixp9Req *r)
 			r->ofcall.rread.data = buf;
 
 			f->offset++;
-			atimes[f->path] = time(NULL);
+			atimes[path] = time(NULL);
 		} else {
 			r->ofcall.rread.count = 0;
 		}
@@ -309,13 +327,21 @@ static void fs_stat(Ixp9Req *r)
 
 static void fs_write(Ixp9Req *r)
 {
-	debug ("fs_write\n");
-
 	FidAux *f = r->fid->aux;
 	char *buf;
+	int path;
+
+	debug ("fs_write\n");
+
+	if (f == NULL) {
+		respond (r, "fs_write (fid->aux == nil)");
+		return;
+	}
+
+	path = fnametopath(f->name);
 
 	if (r->ifcall.twrite.count == 0) {
-		mtimes[f->path] = time(NULL);
+		mtimes[path] = time(NULL);
 		respond (r, NULL);
 		return;
 	}
@@ -324,12 +350,15 @@ static void fs_write(Ixp9Req *r)
 	memcpy(buf, r->ifcall.twrite.data, r->ifcall.twrite.count);
 	buf[r->ifcall.twrite.count] = '\0';
 
-	switch (f->path) {
+	switch (path) {
 		// yes this is REALLY what i mean
 	case 0:
 	case 1:
 	case 2:
 	case 5:
+	case 6:
+	case 7:
+	case 8:
 	default:
 		respond(r, "not even implemented");
 		break;
@@ -340,7 +369,7 @@ static void fs_write(Ixp9Req *r)
 		if (freenect_sync_set_tilt_degs (tilt, 0))
 			respond(r, "kinect disconnected");
 		else {
-			mtimes[f->path] = time(NULL);
+			mtimes[path] = time(NULL);
 			respond(r, NULL);
 		}
 		break;
@@ -354,7 +383,7 @@ static void fs_write(Ixp9Req *r)
 		if (freenect_sync_set_led (led, 0))
 			respond(r, "kinect disconnected");
 		else {
-			mtimes[f->path] = time(NULL);
+			mtimes[path] = time(NULL);
 			respond(r, NULL);
 		}
 		break;
@@ -365,7 +394,7 @@ static void fs_write(Ixp9Req *r)
 
 static void fs_clunk(Ixp9Req *r)
 {
-	debug ("fs_clunk\n");
+	debug ("fs_clunk fid:%d\n", r->fid->fid);
 
 	respond (r, NULL);
 }
@@ -382,7 +411,7 @@ static void fs_attach(Ixp9Req *r)
 	r->fid->qid.type = P9_QTDIR;
 	r->fid->qid.version = 0;
 	r->fid->qid.path = 0;
-	r->fid->aux = newfidaux("/", &r->fid->qid);
+	r->fid->aux = newfidaux("/");
 	r->ofcall.rattach.qid = r->fid->qid;
 
 	debug ("fs_attach fid:%u\n", r->fid->fid);
@@ -406,12 +435,16 @@ static void fs_remove(Ixp9Req *r)
 
 static void fs_freefid(IxpFid *f)
 {
+	debug ("fs_freefid");
+
 	if (f->aux != NULL) {
 		free (f->aux);
 		f->aux = NULL;
+
+		debug (" (free'd)");
 	}
 
-	debug ("fs_freefid\n");
+	debug ("\n");
 }
 
 static void fs_wstat(Ixp9Req *r)
