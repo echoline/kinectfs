@@ -7,14 +7,14 @@
 #include "fids.h"
 
 char *paths[] = { "/", "rgb", "depth", "tilt", "led",
-	"audio0", "audio1", "audio2", "audio3", NULL };
+	"audio0", "audio1", "audio2", "audio3", NULL, NULL };
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 int tilt;
-int led;
+int led = 1;
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
-unsigned int audioclients = 0;
+#define AUDIO_BUFFER_SIZE 65536 * 1024
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
 //#define debug(...) {}; 
@@ -24,7 +24,7 @@ typedef struct {
 	void* image;
 	unsigned long length;
 } FrnctImg;
-static freenect_device *f_dev;
+freenect_device *f_dev;
 
 // have epsilon seconds passed since last?
 // if so, update last and return 1;
@@ -95,7 +95,7 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 	int length;
 	int32_t *mic;
 
-	if (audioclients > 0) for (i = 0; i < 4; i++) {
+	for (i = 0; i < 4; i++) {
 		switch (i) {
 		case 0:
 			mic = mic0;
@@ -113,14 +113,16 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 		length = num_samples * sizeof (int32_t);
 		audiolengths[i] += length;
-		audio[i] = realloc (audio[i], audiolengths[i]);
+
+		if (audiolengths[i] > AUDIO_BUFFER_SIZE) {
+			audiolengths[i] = AUDIO_BUFFER_SIZE;
+			audio[i] = realloc (audio[i], audiolengths[i]);
+			memmove (audio[i], &audio[length],
+					audiolengths[i] - length);
+		} else
+			audio[i] = realloc (audio[i], audiolengths[i]);
+
 		memcpy(&audio[i][audiolengths[i] - length], mic, length);
-	} else for (i = 0; i < 4; i++) {
-		if (audio[i] != NULL) {
-			free(audio[i]);
-			audio[i] = NULL;
-			audiolengths[i] = 0;
-		}
 	}
 }
 
@@ -143,10 +145,6 @@ static void fs_open(Ixp9Req *r)
 	case 6:
 	case 7:
 	case 8:
-		if (audioclients == 0)
-			freenect_start_audio (f_dev);
-
-		audioclients++;
 	default:
 		break;
 	}
@@ -165,8 +163,13 @@ static void fs_walk(Ixp9Req *r)
 		return;
 	}
 
+	debug ("fs_walk fid:%d newfid:%d name:%s\n", r->fid->fid, 
+			r->newfid->fid, paths[path]);
+
 	if (r->ifcall.twalk.nwname == 0) {
-		path = fnametopath(f->name);
+		r->newfid->aux = newfidaux(paths[path]);
+		respond (r, NULL);
+		return;
 	} else if (r->ifcall.twalk.nwname != 1) {
 		respond (r, "no such file");
 		return;
@@ -188,11 +191,8 @@ static void fs_walk(Ixp9Req *r)
 	else
 		r->ofcall.rwalk.wqid[0].type = P9_QTFILE;
 
-	r->newfid->aux = newfidaux(paths[path]);
 	r->ofcall.rwalk.nwqid = 1;
-
-	debug ("fs_walk fid:%d newfid:%d name:%s\n", r->fid->fid, 
-			r->newfid->fid, paths[path]);
+	r->newfid->aux = newfidaux(paths[path]);
 
 	respond(r, NULL);
 }
@@ -209,7 +209,7 @@ static void fs_read(Ixp9Req *r)
 	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
 	static struct timeval lasttilt = { 0, 0 };
-	static FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 3 },
+	static FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 4 },
 				    { { 0, 0 }, NULL, 640 * 480 * 2 } };
 	int i;
 	uint32_t ts;
@@ -258,10 +258,10 @@ static void fs_read(Ixp9Req *r)
 		buf = malloc (size);
 		i = path - 1;
 
-		if (istime(&(imgs[i].last), 1)) {
-			if (imgs[i].image)
-				free (imgs[i].image);
-			imgs[i].image = malloc (imgs[i].length);
+		// ~20 fps
+		if (istime(&(imgs[i].last), 0.05)) {
+			if (imgs[i].image == NULL)
+				imgs[i].image = malloc (imgs[i].length);
 			if (i == 0?
 					freenect_sync_get_video(
 						(void**)&imgs[i].image, &ts, 0,
@@ -277,22 +277,29 @@ static void fs_read(Ixp9Req *r)
 			f->version++;
 
 			// end current reads if we have a new one
-			if (r->ofcall.rread.offset != 0) {
+			if (r->ofcall.tread.offset != 0) {
 				respond (r, NULL);
 				free (buf);
 				return;
 			}
 		}
 		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
-		if (r->ofcall.rread.count < 0)
+
+		if (r->ofcall.rread.count <= 0)
 			r->ofcall.rread.count = 0;
+
 		if (size < r->ofcall.rread.count)
 			r->ofcall.rread.count = size;
-		if (r->ofcall.rread.count != 0)
+
+		if (r->ofcall.rread.count == 0) {
+			free (buf);
+
+		} else {
 			memcpy (buf,
 				&((char*)imgs[i].image)[r->ifcall.tread.offset],
 				r->ofcall.rread.count);
-		r->ofcall.rread.data = buf;
+			r->ofcall.rread.data = buf;
+		}
 
 		respond (r, NULL);
 		return;
@@ -309,7 +316,8 @@ static void fs_read(Ixp9Req *r)
 			size = audiolengths[i];
 
 		memcpy (buf, &audio[i][audiolengths[i] - size], size);
-		audiolengths[i] = 0;
+		//  XXX TODO FUCK.  multiplexing?
+		audiolengths[i] -= size;
 
 		r->ofcall.rread.data = buf;
 		r->ofcall.rread.count = size;
@@ -474,10 +482,6 @@ static void fs_clunk(Ixp9Req *r)
 	case 6:
 	case 7:
 	case 8:
-		audioclients--;
-
-		if (audioclients == 0)
-			freenect_stop_audio (f_dev);
 	default:
 		break;
 	}
@@ -598,6 +602,7 @@ main(int argc, char *argv[]) {
 
 	freenect_sync_set_led (led, 0);
 	freenect_set_audio_in_callback (f_dev, in_callback);
+	freenect_start_audio (f_dev);
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
