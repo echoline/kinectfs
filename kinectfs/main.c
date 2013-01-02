@@ -14,7 +14,7 @@ int tilt;
 int led = 1;
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
-#define AUDIO_BUFFER_SIZE 65536 * 1024
+#define AUDIO_BUFFER_SIZE 65536
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
 //#define debug(...) {}; 
@@ -114,14 +114,11 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		length = num_samples * sizeof (int32_t);
 		audiolengths[i] += length;
 
-		if (audiolengths[i] > AUDIO_BUFFER_SIZE) {
+		if (audiolengths[i] > AUDIO_BUFFER_SIZE)
 			audiolengths[i] = AUDIO_BUFFER_SIZE;
-			audio[i] = realloc (audio[i], audiolengths[i]);
-			memmove (audio[i], &audio[length],
-					audiolengths[i] - length);
-		} else
-			audio[i] = realloc (audio[i], audiolengths[i]);
 
+		audio[i] = realloc (audio[i], audiolengths[i]);
+		memmove (audio[i], &audio[i][length], audiolengths[i] - length);
 		memcpy(&audio[i][audiolengths[i] - length], mic, length);
 	}
 }
@@ -129,25 +126,13 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 static void fs_open(Ixp9Req *r)
 {
 	FidAux *f = r->fid->aux;
-	int path;
-
-	debug ("fs_open\n");
 
 	if (f == NULL) {
 		respond (r, "fs_open (f == NULL)");
 		return;
 	}
 
-	path = fnametopath(f->name);
-
-	switch (path) {
-	case 5:
-	case 6:
-	case 7:
-	case 8:
-	default:
-		break;
-	}
+	debug ("fs_open %s\n", f->name);
 
 	respond (r, NULL);
 }
@@ -163,8 +148,10 @@ static void fs_walk(Ixp9Req *r)
 		return;
 	}
 
-	debug ("fs_walk fid:%d newfid:%d name:%s\n", r->fid->fid, 
-			r->newfid->fid, paths[path]);
+	path = fnametopath(f->name);
+
+	debug ("fs_walk from %s fid:%d newfid:%d\n", paths[path], r->fid->fid, 
+			r->newfid->fid);
 
 	if (r->ifcall.twalk.nwname == 0) {
 		r->newfid->aux = newfidaux(paths[path]);
@@ -214,12 +201,13 @@ static void fs_read(Ixp9Req *r)
 	int i;
 	uint32_t ts;
 
-	debug ("fs_read offset:%d\n", r->ifcall.tread.offset);
-
 	if (f == NULL) {
 		respond(r, "fs_read (fid->aux == NULL)\n");
 		return;
 	}
+
+	debug ("fs_read offset:%d name:%s\n", r->ifcall.tread.offset,
+			f->name);
 
 	path = fnametopath(f->name);
 
@@ -259,7 +247,7 @@ static void fs_read(Ixp9Req *r)
 		i = path - 1;
 
 		// ~20 fps
-		if (istime(&(imgs[i].last), 0.05)) {
+		if (istime(&(imgs[i].last), 0.5)) {
 			if (imgs[i].image == NULL)
 				imgs[i].image = malloc (imgs[i].length);
 			if (i == 0?
@@ -277,11 +265,11 @@ static void fs_read(Ixp9Req *r)
 			f->version++;
 
 			// end current reads if we have a new one
-			if (r->ofcall.tread.offset != 0) {
+		/*	if (r->ofcall.tread.offset != 0) {
 				respond (r, NULL);
 				free (buf);
 				return;
-			}
+			}*/
 		}
 		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
 
@@ -317,6 +305,8 @@ static void fs_read(Ixp9Req *r)
 
 		memcpy (buf, &audio[i][audiolengths[i] - size], size);
 		//  XXX TODO FUCK.  multiplexing?
+//		memmove (audio[i], &audio[i][size],
+//				audiolengths[i] - size);
 		audiolengths[i] -= size;
 
 		r->ofcall.rread.data = buf;
@@ -422,14 +412,6 @@ static void fs_write(Ixp9Req *r)
 	buf[r->ifcall.twrite.count] = '\0';
 
 	switch (path) {
-		// yes this is REALLY what i mean
-	case 0:
-	case 1:
-	case 2:
-	case 5:
-	case 6:
-	case 7:
-	case 8:
 	default:
 		respond(r, "not even implemented");
 		break;
@@ -465,33 +447,14 @@ static void fs_write(Ixp9Req *r)
 
 static void fs_clunk(Ixp9Req *r)
 {
-	FidAux *f = r->fid->aux;
-	int path;
-
 	debug ("fs_clunk fid:%d\n", r->fid->fid);
-
-	if (f == NULL) {
-		respond (r, "fs_clunk (f == NULL)");
-		return;
-	}
-
-	path = fnametopath(f->name);
-
-	switch (path) {
-	case 5:
-	case 6:
-	case 7:
-	case 8:
-	default:
-		break;
-	}
 
 	respond (r, NULL);
 }
 
 static void fs_flush(Ixp9Req *r)
 {
-	debug ("fs_flush\n");
+	debug ("fs_flush fid:%d\n", r->fid->fid);
 
 	respond(r, NULL);
 }
