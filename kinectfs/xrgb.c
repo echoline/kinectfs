@@ -7,11 +7,10 @@ int main(void) {
    Display *d;
    Window w;
    XEvent e;
-   int s, x, y, o;
+   int s, x, y, o, n;
    GC gc;
    XImage *i;
    char buf[640 * 480 * 4];
-   Pixmap p;
 
    d = XOpenDisplay(NULL);
    if (d == NULL) {
@@ -29,9 +28,9 @@ int main(void) {
    for (y = 0; y < 480; y++) for (x = 0; x < 640; x++) {
       o = 640 * 4 * y + 4 * x;
 
-      buf[o] = 0;
-      for (s = 3; s > 0; s--)
-         buf[o + s] = getc(stdin);
+      buf[o + 3] = 255;
+      for (n = 2; n >= 0; n--)
+         buf[o + n] = getc(stdin);
    }
 
    i = XCreateImage(d, DefaultVisual(d, s), 24, ZPixmap, 0, buf, 640, 480,
