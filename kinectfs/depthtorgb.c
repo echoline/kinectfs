@@ -16,8 +16,6 @@ int main() {
 		lut[i] = v * 6 * 256;
 	}
 
-	printf ("P6 640 480 255\n");
-
 	while (j++ < DIM) {
 		c = getc(stdin);
 		if (c == EOF)
@@ -58,5 +56,7 @@ int main() {
 			break;
 		}
 	}
+
+	fflush (stdout);
 }
 

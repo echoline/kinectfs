@@ -12,6 +12,7 @@ unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 int tilt;
 int led = 1;
+int depthmode = 0;
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
 #define AUDIO_BUFFER_SIZE 65536
@@ -247,7 +248,7 @@ static void fs_read(Ixp9Req *r)
 		i = path - 1;
 
 		// ~20 fps
-		if (istime(&(imgs[i].last), 0.5)) {
+		if (istime(&(imgs[i].last), 0.0333333)) {
 			if (imgs[i].image == NULL)
 				imgs[i].image = malloc (imgs[i].length);
 			if (i == 0?
@@ -257,7 +258,7 @@ static void fs_read(Ixp9Req *r)
 				:
 					freenect_sync_get_depth(
 						(void**)&imgs[i].image, &ts, 0,
-						FREENECT_DEPTH_REGISTERED)) {
+						depthmode)) {
 				respond (r, "is kinect connected?");
 				free (buf);
 				return;
@@ -265,11 +266,11 @@ static void fs_read(Ixp9Req *r)
 			f->version++;
 
 			// end current reads if we have a new one
-		/*	if (r->ofcall.tread.offset != 0) {
+			if (r->ofcall.tread.offset != 0) {
 				respond (r, NULL);
 				free (buf);
 				return;
-			}*/
+			}
 		}
 		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
 
@@ -307,7 +308,7 @@ static void fs_read(Ixp9Req *r)
 		//  XXX TODO FUCK.  multiplexing?
 //		memmove (audio[i], &audio[i][size],
 //				audiolengths[i] - size);
-		audiolengths[i] -= size;
+		//audiolengths[i] -= size;
 
 		r->ofcall.rread.data = buf;
 		r->ofcall.rread.count = size;
@@ -415,14 +416,25 @@ static void fs_write(Ixp9Req *r)
 	default:
 		respond(r, "not even implemented");
 		break;
+	case 2:
+		r->ofcall.rwrite.count = r->ifcall.twrite.count;
+		depthmode = atoi(buf);
+
+		if ((depthmode % 6) != depthmode)
+			depthmode = 0;
+
+		mtimes[path] = time(NULL);
+		respond(r, NULL);
+		break;
 	case 3:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
 		tilt = atoi (buf);
 
+		mtimes[path] = time(NULL);
+
 		if (freenect_sync_set_tilt_degs (tilt, 0))
 			respond(r, "kinect disconnected");
 		else {
-			mtimes[path] = time(NULL);
 			respond(r, NULL);
 		}
 		break;
@@ -433,10 +445,11 @@ static void fs_write(Ixp9Req *r)
 		if (led < 0) led = 0;
 		else if (led > 6) led = 6;
 
+		mtimes[path] = time(NULL);
+
 		if (freenect_sync_set_led (led, 0))
 			respond(r, "kinect disconnected");
 		else {
-			mtimes[path] = time(NULL);
 			respond(r, NULL);
 		}
 		break;
