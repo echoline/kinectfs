@@ -50,7 +50,7 @@ int main() {
 			break;
 		case 5:
 			printf ("%c%c%c", 0, 0, 255 - c);
-			break;
+			break; 
 		default:
 			printf ("%c%c%c", 0, 0, 0);
 			break;

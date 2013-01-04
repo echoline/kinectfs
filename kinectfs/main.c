@@ -25,6 +25,8 @@ typedef struct {
 	void* image;
 	unsigned long length;
 } FrnctImg;
+FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 4 },
+		    { { 0, 0 }, NULL, 640 * 480 * 2 } };
 freenect_device *f_dev;
 
 // have epsilon seconds passed since last?
@@ -197,8 +199,6 @@ static void fs_read(Ixp9Req *r)
 	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
 	static struct timeval lasttilt = { 0, 0 };
-	static FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 4 },
-				    { { 0, 0 }, NULL, 640 * 480 * 2 } };
 	int i;
 	uint32_t ts;
 
@@ -248,9 +248,8 @@ static void fs_read(Ixp9Req *r)
 		i = path - 1;
 
 		// ~20 fps
-		if (istime(&(imgs[i].last), 0.0333333)) {
-			if (imgs[i].image == NULL)
-				imgs[i].image = malloc (imgs[i].length);
+		if ((r->ofcall.tread.offset == 0) &&
+		    istime(&(imgs[i].last), 0.0333333)) {
 			if (i == 0?
 					freenect_sync_get_video(
 						(void**)&imgs[i].image, &ts, 0,
@@ -264,13 +263,6 @@ static void fs_read(Ixp9Req *r)
 				return;
 			}
 			f->version++;
-
-			// end current reads if we have a new one
-			if (r->ofcall.tread.offset != 0) {
-				respond (r, NULL);
-				free (buf);
-				return;
-			}
 		}
 		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
 
@@ -549,7 +541,7 @@ freenect_do_one (long ms, void *aux)
 
 int
 main(int argc, char *argv[]) {
-	int fd;
+	int i, fd;
 	IxpConn *acceptor;
 	freenect_context *f_ctx;
 
@@ -579,6 +571,10 @@ main(int argc, char *argv[]) {
 	freenect_sync_set_led (led, 0);
 	freenect_set_audio_in_callback (f_dev, in_callback);
 	freenect_start_audio (f_dev);
+
+	for (i = 0; i < 2; i++)
+		if (imgs[i].image == NULL)
+			imgs[i].image = malloc (imgs[i].length);
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
