@@ -4,12 +4,57 @@
 #include <limits.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
-#include "fids.h"
 
 char *paths[] = { "/", "rgb", "depth", "tilt", "led",
 	"audio0", "audio1", "audio2", "audio3", NULL, NULL };
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+typedef struct FileId {
+	unsigned long fid;
+	void *aux;
+	void *conn;
+	struct FileId *next;
+} FileId;
+
+typedef struct _FidAux {
+	char		*name;
+	unsigned int 	version;
+	unsigned long	length;
+	unsigned long	offset;
+} FidAux;
+
+int
+fnametopath(char *name) {
+	int i;
+	char *p = name;
+	char *q;
+
+	while (*p == '/')
+		p++;
+
+	for (i = 0; paths[i] != NULL; i++) {
+		q = paths[i];
+		while (*q == '/')
+			q++;
+
+		if (strcasecmp(p, q) == 0)
+			return (i);
+	}
+
+	return -1;
+}
+
+FidAux*
+newfidaux(char *name) {
+	FidAux *ret;
+
+	ret = calloc (1, sizeof(FidAux));
+	ret->name = paths[fnametopath(name)];
+
+	return ret;
+}
+
 int tilt;
 int led = 1;
 int depthmode = 0;
@@ -533,7 +578,7 @@ freenect_do_one (long ms, void *aux)
 {
 	struct timeval tv = { 0, 0 };
 	if (freenect_process_events_timeout ((freenect_context*)aux, &tv) < 0) {
-		fprintf (stderr, "freenect_process_events\n");
+		perror ("freenect_process_events");
 		exit (-1);
 	}
 	ixp_settimer(&server, 1, freenect_do_one, aux);

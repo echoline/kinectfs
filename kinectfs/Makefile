@@ -1,15 +1,17 @@
-CFLAGS=-g -I/usr/local/include/libfreenect
+CFLAGS=-g
 
-all: kinectfs depthtorgb xrgb
+all: kinectfs depthtorgb xrgb rgbtohsv
 
-kinectfs: main.o fids.o
-	gcc -o kinectfs main.o fids.o -lixp -lfreenect -lfreenect_sync
+kinectfs: kinectfs.c
+	gcc -o kinectfs kinectfs.c -I/usr/local/include/libfreenect/ -I/usr/local/include/libixp/ -lixp -lfreenect -lfreenect_sync
 
 clean:
-	rm -f kinectfs depthtorgb xrgb *.o *~
+	rm -f kinectfs depthtorgb rgbtohsv xrgb *.o *~
 
 depthtorgb: depthtorgb.c
 	gcc -o depthtorgb depthtorgb.c -lm -g
 
 xrgb: xrgb.c
 	gcc -o xrgb xrgb.c -lX11 -g
+
+rgbtohsv: rgbtohsv.c
