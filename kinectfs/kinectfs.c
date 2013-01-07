@@ -10,13 +10,6 @@ char *paths[] = { "/", "rgb", "depth", "tilt", "led",
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-typedef struct FileId {
-	unsigned long fid;
-	void *aux;
-	void *conn;
-	struct FileId *next;
-} FileId;
-
 typedef struct _FidAux {
 	char		*name;
 	unsigned int 	version;
@@ -60,7 +53,8 @@ int led = 1;
 int depthmode = 0;
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
-#define AUDIO_BUFFER_SIZE 65536
+size_t audiohead[4] = { 0, 0, 0, 0 };
+#define AUDIO_BUFFER_SIZE 65536 * 8
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
 //#define debug(...) {}; 
@@ -120,6 +114,7 @@ dostat(char *name, IxpStat *stat) {
 	case 0:
 		stat->mode |= P9_DMDIR|P9_DMEXEC;
 		break;
+	case 2:
 	case 3:
 	case 4:
 		stat->mode |= P9_DMWRITE;
@@ -161,12 +156,13 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 		length = num_samples * sizeof (int32_t);
 		audiolengths[i] += length;
+		audiohead[i] += length;	
 
 		if (audiolengths[i] > AUDIO_BUFFER_SIZE)
 			audiolengths[i] = AUDIO_BUFFER_SIZE;
 
 		audio[i] = realloc (audio[i], audiolengths[i]);
-		memmove (audio[i], &audio[i][length], audiolengths[i] - length);
+		memmove(audio[i], &audio[i][length], audiolengths[i]-length);
 		memcpy(&audio[i][audiolengths[i] - length], mic, length);
 	}
 }
@@ -252,8 +248,8 @@ static void fs_read(Ixp9Req *r)
 		return;
 	}
 
-	debug ("fs_read offset:%d name:%s\n", r->ifcall.tread.offset,
-			f->name);
+	debug ("fs_read read:%d offset:%d\n", r->ifcall.tread.offset,
+			f->offset);
 
 	path = fnametopath(f->name);
 
@@ -338,17 +334,23 @@ static void fs_read(Ixp9Req *r)
 		size = r->ifcall.tread.count;
 		buf = malloc (size);
 
+		n = audiohead[i] - f->offset;
+
 		if (size > audiolengths[i])
 			size = audiolengths[i];
 
-		memcpy (buf, &audio[i][audiolengths[i] - size], size);
-		//  XXX TODO FUCK.  multiplexing?
-//		memmove (audio[i], &audio[i][size],
-//				audiolengths[i] - size);
-		//audiolengths[i] -= size;
+		if (size < n)
+			n = size;
+	
+		if ((audiolengths[i] >= sizeof(int32_t)) && (n == 0))
+			size = n = sizeof(int32_t);
+
+		memcpy (buf, &audio[i][audiolengths[i] - size], n);
+
+		f->offset = audiohead[i] - size + n;
 
 		r->ofcall.rread.data = buf;
-		r->ofcall.rread.count = size;
+		r->ofcall.rread.count = n;
 
 		respond(r, NULL);
 		return;
