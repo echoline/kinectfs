@@ -4,9 +4,18 @@
 #include <limits.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
+#ifdef USE_JPEG
+#include <jpeglib.h>
+#include <math.h>
+
+unsigned short d2rlut[2048];
+#endif
 
 char *paths[] = { "/", "rgb", "depth", "tilt", "led",
-	"audio0", "audio1", "audio2", "audio3", NULL, NULL };
+#ifdef USE_AUDIO
+	"audio0", "audio1", "audio2", "audio3",
+#endif
+	 NULL, NULL };
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -51,21 +60,27 @@ newfidaux(char *name) {
 int tilt;
 int led = 1;
 int depthmode = 0;
+#ifdef USE_AUDIO
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
 size_t audiohead[4] = { 0, 0, 0, 0 };
 #define AUDIO_BUFFER_SIZE 65536 * 8
+#endif
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
 //#define debug(...) {}; 
 
 typedef struct {
 	struct timeval last;
-	void* image;
+	unsigned char* image;
 	unsigned long length;
 } FrnctImg;
-FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 4 },
+FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 3 },
+#ifdef USE_JPEG
+		    { { 0, 0 }, NULL, 640 * 480 * 3 } };
+#else
 		    { { 0, 0 }, NULL, 640 * 480 * 2 } };
+#endif
 freenect_device *f_dev;
 
 // have epsilon seconds passed since last?
@@ -130,6 +145,7 @@ dostat(char *name, IxpStat *stat) {
 	return ixp_sizeof_stat(stat);
 }
 
+#ifdef USE_AUDIO
 void
 in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		int32_t *mic1, int32_t *mic2, int32_t *mic3,
@@ -166,6 +182,7 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		memcpy(&audio[i][audiolengths[i] - length], mic, length);
 	}
 }
+#endif
 
 static void fs_open(Ixp9Req *r)
 {
@@ -236,7 +253,16 @@ static void fs_read(Ixp9Req *r)
 	char *buf;
 	int n, size;
 	int path;
-
+#ifdef USE_JPEG
+	struct jpeg_compress_struct cinfo;
+	struct jpeg_error_mgr jerr;
+	JSAMPROW row_pointer[1];
+	unsigned char *jpegbuf;
+	size_t jpegbuflen = 0;
+	int j, k;
+	int c;
+	unsigned short s;
+#endif
 	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
 	static struct timeval lasttilt = { 0, 0 };
@@ -261,7 +287,7 @@ static void fs_read(Ixp9Req *r)
 		f->offset++;
 
 		// END OF FILES
-		if (paths[f->offset] == NULL){
+		if (paths[f->offset] == NULL) {
 			respond(r, NULL);
 			return;
 		}
@@ -290,7 +316,7 @@ static void fs_read(Ixp9Req *r)
 
 		// ~20 fps
 		if ((r->ofcall.tread.offset == 0) &&
-		    istime(&(imgs[i].last), 0.0333333)) {
+		    istime(&(imgs[i].last), 1.0/30.0)) {
 			if (i == 0?
 					freenect_sync_get_video(
 						(void**)&imgs[i].image, &ts, 0,
@@ -303,8 +329,94 @@ static void fs_read(Ixp9Req *r)
 				free (buf);
 				return;
 			}
+
 			f->version++;
+
+#ifdef USE_JPEG
+			if (i == 1) {
+				jpegbuf = malloc (640 * 480 * 3);
+
+				for (j = 0; j < (640 * 480); j++) {
+					s = imgs[i].image[j * 2];
+					s |= imgs[i].image[j * 2 + 1]
+						<< 8;
+
+					if (s >= 2048)
+						s = 0;
+
+					k = d2rlut[s];
+					c = k & 0xff;
+
+					switch (k >> 8) {
+					case 0:
+						jpegbuf[j * 3] = 255;
+						jpegbuf[j * 3 + 1] = 255 - c;
+						jpegbuf[j * 3 + 2] = 255 - c;
+						break;
+					case 1:
+						jpegbuf[j * 3] = 255;
+						jpegbuf[j * 3 + 1] = c;
+						jpegbuf[j * 3 + 2] = 0;
+						break;
+					case 2:
+						jpegbuf[j * 3] = 255 - c;
+						jpegbuf[j * 3 + 1] = 255;
+						jpegbuf[j * 3 + 2] = 0;
+						break;
+					case 3:
+						jpegbuf[j * 3] = 0;
+						jpegbuf[j * 3 + 1] = 255;
+						jpegbuf[j * 3 + 2] = c;
+						break;
+					case 4:
+						jpegbuf[j * 3] = 0;
+						jpegbuf[j * 3 + 1] = 255 - c;
+						jpegbuf[j * 3 + 2] = 255;
+						break;
+					case 5:
+						jpegbuf[j * 3] = 0;
+						jpegbuf[j * 3 + 1] = 0;
+						jpegbuf[j * 3 + 2] = 255 - c;
+						break;
+					default:
+						jpegbuf[j * 3] = 0;
+						jpegbuf[j * 3 + 1] = 0;
+						jpegbuf[j * 3 + 2] = 0;
+						break;
+					}
+				}
+
+				memcpy(imgs[i].image, jpegbuf, 640 * 480 * 3);
+				free(jpegbuf);
+			}
+
+			jpegbuf = malloc (640 * 480 * 3);
+			cinfo.err = jpeg_std_error( &jerr );
+			jpeg_create_compress(&cinfo);
+
+			cinfo.image_width = 640;
+			cinfo.image_height = 480;
+			cinfo.input_components = 3;
+			cinfo.in_color_space = JCS_RGB;
+
+			jpeg_mem_dest( &cinfo, &jpegbuf, &jpegbuflen );
+			jpeg_set_defaults( &cinfo );
+
+			jpeg_start_compress( &cinfo, TRUE );
+			while( cinfo.next_scanline < cinfo.image_height ) {
+				row_pointer[0] = &imgs[i].image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components];
+				jpeg_write_scanlines( &cinfo, row_pointer, 1 );
+			}
+
+			jpeg_finish_compress( &cinfo );
+			jpeg_destroy_compress( &cinfo );
+
+			imgs[i].length = jpegbuflen;
+			memcpy(imgs[i].image, jpegbuf, jpegbuflen);
+			free (jpegbuf);
+#endif
 		}
+
 		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
 
 		if (r->ofcall.rread.count <= 0)
@@ -317,14 +429,14 @@ static void fs_read(Ixp9Req *r)
 			free (buf);
 
 		} else {
-			memcpy (buf,
-				&((char*)imgs[i].image)[r->ifcall.tread.offset],
+			memcpy (buf, &imgs[i].image[r->ifcall.tread.offset],
 				r->ofcall.rread.count);
 			r->ofcall.rread.data = buf;
 		}
 
 		respond (r, NULL);
 		return;
+#ifdef USE_AUDIO
 	case 5:
 	case 6:
 	case 7:
@@ -354,6 +466,7 @@ static void fs_read(Ixp9Req *r)
 
 		respond(r, NULL);
 		return;
+#endif
 	case 3:
 		if (f->offset == 0) {
 			size = r->ifcall.tread.count;
@@ -591,6 +704,9 @@ main(int argc, char *argv[]) {
 	int i, fd;
 	IxpConn *acceptor;
 	freenect_context *f_ctx;
+#ifdef USE_JPEG
+	float v;
+#endif
 
 	if (argc != 2) {
 		fprintf (stderr, "usage:\n\t%s proto!addr[!port]\n", argv[0]);
@@ -609,15 +725,26 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 
+	freenect_sync_set_led (led, 0);
+
+#ifdef USE_JPEG
+	for (i = 0; i < 2048; i++) {
+		v = i/2048.0;
+		v = powf(v, 3) * 6;
+		d2rlut[i] = v * 6 * 256;
+	}
+#endif
+
+#ifdef USE_AUDIO
 	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
 		fprintf (stderr, "could not open kinect audio\n");
 		freenect_shutdown (f_ctx);
 		return -1;
 	}
 
-	freenect_sync_set_led (led, 0);
 	freenect_set_audio_in_callback (f_dev, in_callback);
 	freenect_start_audio (f_dev);
+#endif
 
 	for (i = 0; i < 2; i++)
 		if (imgs[i].image == NULL)

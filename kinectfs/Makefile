@@ -1,12 +1,12 @@
 CFLAGS=-g
 
-all: kinectfs depthtorgb xrgb rgbtohsv gtkrgbanim
-
-kinectfs: kinectfs.c
-	gcc -o kinectfs kinectfs.c -I/usr/local/include/libfreenect/ -I/usr/local/include/libixp/ -lixp -lfreenect -lfreenect_sync
+all: kinectfs depthtorgb
 
 clean:
 	rm -f kinectfs depthtorgb rgbtohsv xrgb gtkrgbanim *.o *~
+
+kinectfs: kinectfs.c
+	gcc -g -o kinectfs kinectfs.c -I/usr/local/include/libfreenect/ -I/usr/local/include/libixp/ -lixp -lfreenect -lfreenect_sync #-DUSE_JPEG -ljpeg -lm
 
 depthtorgb: depthtorgb.c
 	gcc -o depthtorgb depthtorgb.c -lm -g
