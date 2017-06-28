@@ -2,45 +2,58 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <math.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
 #ifdef USE_JPEG
 #include <jpeglib.h>
-#include <math.h>
-
-unsigned short d2rlut[2048];
 #endif
 
+unsigned short d2rlut[2048];
 char *paths[] = { "/", "rgb", "depth", "tilt", "led",
 #ifdef USE_AUDIO
 	"audio0", "audio1", "audio2", "audio3",
+#if 0
+	"audio0.mp3", "audio1.mp3", "audio2.mp3", "audio3.mp3",
+#endif
+#endif
+#ifdef USE_JPEG
+#if 0
+	"rgb.jpg", "depth.jpg",
+#endif
 #endif
 	 NULL, NULL };
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
+typedef struct {
+	struct timeval last;
+	unsigned char* image;
+	unsigned long length;
+} FrnctImg;
+
 typedef struct _FidAux {
-	char		*name;
 	unsigned int 	version;
 	unsigned long	length;
 	unsigned long	offset;
+	FrnctImg	*fim;
 } FidAux;
 
 int
 fnametopath(char *name) {
 	int i;
-	char *p = name;
 	char *q;
 
-	while (*p == '/')
-		p++;
+	q = strrchr(name, '/');
+	if (q != NULL)
+		name = q + 1;
 
 	for (i = 0; paths[i] != NULL; i++) {
 		q = paths[i];
 		while (*q == '/')
 			q++;
 
-		if (strcasecmp(p, q) == 0)
+		if (strcasecmp(name, q) == 0)
 			return (i);
 	}
 
@@ -48,11 +61,15 @@ fnametopath(char *name) {
 }
 
 FidAux*
-newfidaux(char *name) {
+newfidaux(int path) {
 	FidAux *ret;
 
 	ret = calloc (1, sizeof(FidAux));
-	ret->name = paths[fnametopath(name)];
+	if (path == 1 || path == 2) {
+		ret->fim = calloc(1, sizeof(FrnctImg));
+		ret->fim->length = 640*480*3;
+		ret->fim->image = calloc(1, ret->fim->length);
+	}
 
 	return ret;
 }
@@ -69,19 +86,6 @@ size_t audiohead[4] = { 0, 0, 0, 0 };
 
 #define debug(...) fprintf (stderr, __VA_ARGS__);
 //#define debug(...) {}; 
-
-typedef struct {
-	struct timeval last;
-	unsigned char* image;
-	unsigned long length;
-} FrnctImg;
-FrnctImg imgs[2] = { { { 0, 0 }, NULL, 640 * 480 * 3 },
-#ifdef USE_JPEG
-		    { { 0, 0 }, NULL, 640 * 480 * 3 } };
-#else
-		    { { 0, 0 }, NULL, 640 * 480 * 2 } };
-#endif
-freenect_device *f_dev;
 
 // have epsilon seconds passed since last?
 // if so, update last and return 1;
@@ -111,9 +115,8 @@ ISTIMEEND:
 }
 
 int
-dostat(char *name, IxpStat *stat) {
+dostat(int path, IxpStat *stat) {
 	static char *none = "none";
-	int path = fnametopath(name);
 
 	if (path < 0) {
 		return -1;
@@ -186,14 +189,113 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 static void fs_open(Ixp9Req *r)
 {
-	FidAux *f = r->fid->aux;
+	FidAux *f;
+	unsigned int ts;
+	unsigned char *buf;
+	int c;
+	unsigned short s;
+	int j, k;
+	int path = r->fid->qid.path;
+#ifdef USE_JPEG
+	struct jpeg_compress_struct cinfo;
+	struct jpeg_error_mgr jerr;
+	JSAMPROW row_pointer[1];
+	size_t buflen = 0;
+#endif
 
-	if (f == NULL) {
-		respond (r, "fs_open (f == NULL)");
+	debug ("fs_open %s %lu\n", paths[path], r->fid->fid);
+
+	r->fid->aux = newfidaux(path);
+	f = r->fid->aux;
+
+	if (path == 1 && freenect_sync_get_video((void**)(&buf), &ts, 0, FREENECT_VIDEO_RGB) != 0) {
+		respond(r, "freenect_sync_get_video");
+		return;
+	} else if (path == 2 && freenect_sync_get_depth((void**)(&buf), &ts, 0, depthmode) != 0) {
+		respond(r, "freenect_sync_get_depth");
 		return;
 	}
+	if (path == 1 || path == 2) {
+		if (path != 2) {
+			memcpy(f->fim->image, buf, f->fim->length);
+		} else {
+			for (j = 0; j < (640 * 480); j++) {
+				s = buf[j * 2];
+				s |= buf[j * 2 + 1] << 8;
+	
+				if (s >= 2048)
+					s = 0;
 
-	debug ("fs_open %s\n", f->name);
+				k = d2rlut[s];
+				c = k & 0xff;
+
+				switch (k >> 8) {
+				case 0:
+					f->fim->image[j * 3] = 255;
+					f->fim->image[j * 3 + 1] = 255 - c;
+					f->fim->image[j * 3 + 2] = 255 - c;
+					break;
+				case 1:
+					f->fim->image[j * 3] = 255;
+					f->fim->image[j * 3 + 1] = c;
+					f->fim->image[j * 3 + 2] = 0;
+					break;
+				case 2:
+					f->fim->image[j * 3] = 255 - c;
+					f->fim->image[j * 3 + 1] = 255;
+					f->fim->image[j * 3 + 2] = 0;
+					break;
+				case 3:
+					f->fim->image[j * 3] = 0;
+					f->fim->image[j * 3 + 1] = 255;
+					f->fim->image[j * 3 + 2] = c;
+					break;
+				case 4:
+					f->fim->image[j * 3] = 0;
+					f->fim->image[j * 3 + 1] = 255 - c;
+					f->fim->image[j * 3 + 2] = 255;
+					break;
+				case 5:
+					f->fim->image[j * 3] = 0;
+					f->fim->image[j * 3 + 1] = 0;
+					f->fim->image[j * 3 + 2] = 255 - c;
+					break;
+				default:
+					f->fim->image[j * 3] = 0;
+					f->fim->image[j * 3 + 1] = 0;
+					f->fim->image[j * 3 + 2] = 0;
+					break;
+				}
+			}
+		}
+
+#ifdef USE_JPEG
+		cinfo.err = jpeg_std_error( &jerr );
+		jpeg_create_compress(&cinfo);
+
+		cinfo.image_width = 640;
+		cinfo.image_height = 480;
+		cinfo.input_components = 3;
+		cinfo.in_color_space = JCS_RGB;
+
+		jpeg_mem_dest( &cinfo, &buf, &buflen );
+		jpeg_set_defaults( &cinfo );
+
+		jpeg_start_compress( &cinfo, TRUE );
+		while( cinfo.next_scanline < cinfo.image_height ) {
+			row_pointer[0] = &f->fim->image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components];
+
+			jpeg_write_scanlines( &cinfo, row_pointer, 1 );
+		}
+
+		jpeg_finish_compress( &cinfo );
+
+		f->fim->length = buflen;
+		memcpy(f->fim->image, buf, buflen);
+
+		jpeg_destroy_compress( &cinfo );
+#endif
+	}
 
 	respond (r, NULL);
 }
@@ -209,13 +311,11 @@ static void fs_walk(Ixp9Req *r)
 		return;
 	}
 
-	path = fnametopath(f->name);
+	path = r->fid->qid.path;
 
-	debug ("fs_walk from %s fid:%d newfid:%d\n", paths[path], r->fid->fid, 
-			r->newfid->fid);
+	debug ("fs_walk from %s fid:%lu newfid:%lu\n", paths[path], r->fid->fid, r->newfid->fid);
 
-	if (r->ifcall.twalk.nwname == 0) {
-		r->newfid->aux = newfidaux(paths[path]);
+	if (r->ifcall.twalk.nwname == 0 || strcmp(r->ifcall.twalk.wname[0], ".") == 0) {
 		respond (r, NULL);
 		return;
 	} else if (r->ifcall.twalk.nwname != 1) {
@@ -227,7 +327,7 @@ static void fs_walk(Ixp9Req *r)
 		path = fnametopath(r->ifcall.twalk.wname[0]);
 	}
 
-	if (path < 0) {
+	if (path < 0 || path >= (sizeof(paths)/sizeof(paths[0]))) {
 		respond (r, "no such file");
 		return;
 	}
@@ -240,7 +340,7 @@ static void fs_walk(Ixp9Req *r)
 		r->ofcall.rwalk.wqid[0].type = P9_QTFILE;
 
 	r->ofcall.rwalk.nwqid = 1;
-	r->newfid->aux = newfidaux(paths[path]);
+//	r->newfid->aux = newfidaux(path);
 
 	respond(r, NULL);
 }
@@ -253,31 +353,19 @@ static void fs_read(Ixp9Req *r)
 	char *buf;
 	int n, size;
 	int path;
-#ifdef USE_JPEG
-	struct jpeg_compress_struct cinfo;
-	struct jpeg_error_mgr jerr;
-	JSAMPROW row_pointer[1];
-	unsigned char *jpegbuf;
-	size_t jpegbuflen = 0;
-	int j, k;
-	int c;
-	unsigned short s;
-#endif
 	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
 	static struct timeval lasttilt = { 0, 0 };
 	int i;
-	uint32_t ts;
 
 	if (f == NULL) {
 		respond(r, "fs_read (fid->aux == NULL)\n");
 		return;
 	}
 
-	debug ("fs_read read:%d offset:%d\n", r->ifcall.tread.offset,
-			f->offset);
+	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
 
-	path = fnametopath(f->name);
+	path = r->fid->qid.path;
 
 	if (r->ifcall.tread.offset == 0)
 		f->offset = 0;
@@ -295,7 +383,7 @@ static void fs_read(Ixp9Req *r)
 		size = r->ifcall.tread.count;
 		buf = malloc (size);
 		m = ixp_message((unsigned char*)buf, size, MsgPack);
-		n = dostat(paths[f->offset], &stat);
+		n = dostat(f->offset, &stat);
 		if (n < 0) {
 			free (buf);
 			respond (r, "fs_read dostat failed");
@@ -311,113 +399,12 @@ static void fs_read(Ixp9Req *r)
 	case 1:
 	case 2:
 		size = r->ifcall.tread.count;
-		buf = malloc (size);
-		i = path - 1;
+		if (size < 0) {
+			respond(r, "no.");
+			return;
+		}		
 
-		// ~20 fps
-		if ((r->ofcall.tread.offset == 0) &&
-		    istime(&(imgs[i].last), 1.0/30.0)) {
-			if (i == 0?
-					freenect_sync_get_video(
-						(void**)&imgs[i].image, &ts, 0,
-						FREENECT_VIDEO_RGB)
-				:
-					freenect_sync_get_depth(
-						(void**)&imgs[i].image, &ts, 0,
-						depthmode)) {
-				respond (r, "is kinect connected?");
-				free (buf);
-				return;
-			}
-
-			f->version++;
-
-#ifdef USE_JPEG
-			if (i == 1) {
-				jpegbuf = malloc (640 * 480 * 3);
-
-				for (j = 0; j < (640 * 480); j++) {
-					s = imgs[i].image[j * 2];
-					s |= imgs[i].image[j * 2 + 1]
-						<< 8;
-
-					if (s >= 2048)
-						s = 0;
-
-					k = d2rlut[s];
-					c = k & 0xff;
-
-					switch (k >> 8) {
-					case 0:
-						jpegbuf[j * 3] = 255;
-						jpegbuf[j * 3 + 1] = 255 - c;
-						jpegbuf[j * 3 + 2] = 255 - c;
-						break;
-					case 1:
-						jpegbuf[j * 3] = 255;
-						jpegbuf[j * 3 + 1] = c;
-						jpegbuf[j * 3 + 2] = 0;
-						break;
-					case 2:
-						jpegbuf[j * 3] = 255 - c;
-						jpegbuf[j * 3 + 1] = 255;
-						jpegbuf[j * 3 + 2] = 0;
-						break;
-					case 3:
-						jpegbuf[j * 3] = 0;
-						jpegbuf[j * 3 + 1] = 255;
-						jpegbuf[j * 3 + 2] = c;
-						break;
-					case 4:
-						jpegbuf[j * 3] = 0;
-						jpegbuf[j * 3 + 1] = 255 - c;
-						jpegbuf[j * 3 + 2] = 255;
-						break;
-					case 5:
-						jpegbuf[j * 3] = 0;
-						jpegbuf[j * 3 + 1] = 0;
-						jpegbuf[j * 3 + 2] = 255 - c;
-						break;
-					default:
-						jpegbuf[j * 3] = 0;
-						jpegbuf[j * 3 + 1] = 0;
-						jpegbuf[j * 3 + 2] = 0;
-						break;
-					}
-				}
-
-				memcpy(imgs[i].image, jpegbuf, 640 * 480 * 3);
-				free(jpegbuf);
-			}
-
-			jpegbuf = malloc (640 * 480 * 3);
-			cinfo.err = jpeg_std_error( &jerr );
-			jpeg_create_compress(&cinfo);
-
-			cinfo.image_width = 640;
-			cinfo.image_height = 480;
-			cinfo.input_components = 3;
-			cinfo.in_color_space = JCS_RGB;
-
-			jpeg_mem_dest( &cinfo, &jpegbuf, &jpegbuflen );
-			jpeg_set_defaults( &cinfo );
-
-			jpeg_start_compress( &cinfo, TRUE );
-			while( cinfo.next_scanline < cinfo.image_height ) {
-				row_pointer[0] = &imgs[i].image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components];
-				jpeg_write_scanlines( &cinfo, row_pointer, 1 );
-			}
-
-			jpeg_finish_compress( &cinfo );
-			jpeg_destroy_compress( &cinfo );
-
-			imgs[i].length = jpegbuflen;
-			memcpy(imgs[i].image, jpegbuf, jpegbuflen);
-			free (jpegbuf);
-#endif
-		}
-
-		r->ofcall.rread.count = imgs[i].length - r->ifcall.tread.offset;
+		r->ofcall.rread.count = f->fim->length - r->ifcall.tread.offset;
 
 		if (r->ofcall.rread.count <= 0)
 			r->ofcall.rread.count = 0;
@@ -425,13 +412,9 @@ static void fs_read(Ixp9Req *r)
 		if (size < r->ofcall.rread.count)
 			r->ofcall.rread.count = size;
 
-		if (r->ofcall.rread.count == 0) {
-			free (buf);
-
-		} else {
-			memcpy (buf, &imgs[i].image[r->ifcall.tread.offset],
-				r->ofcall.rread.count);
-			r->ofcall.rread.data = buf;
+		if (r->ofcall.rread.count != 0) {
+			r->ofcall.rread.data = calloc(1, f->fim->length);
+			memcpy (r->ofcall.rread.data, &f->fim->image[r->ifcall.tread.offset], r->ofcall.rread.count);
 		}
 
 		respond (r, NULL);
@@ -515,20 +498,14 @@ static void fs_read(Ixp9Req *r)
 
 static void fs_stat(Ixp9Req *r)
 {
-	FidAux *f = r->fid->aux;
 	IxpStat stat;
 	IxpMsg m;
 	int size;
 	char *buf;
 
-	debug ("fs_stat fid:%d\n", r->fid->fid);
+	debug ("fs_stat fid:%lu\n", r->fid->fid);
 
-	if (f == NULL) {
-		respond (r, "fs_stat (f == NULL)");
-		return;
-	}
-
-	size = dostat(f->name, &stat);
+	size = dostat(r->fid->qid.path, &stat);
 
 	buf = malloc (size);
 	m = ixp_message(buf, size, MsgPack);
@@ -552,7 +529,7 @@ static void fs_write(Ixp9Req *r)
 		return;
 	}
 
-	path = fnametopath(f->name);
+	path = r->fid->qid.path;
 
 	if (r->ifcall.twrite.count == 0) {
 		mtimes[path] = time(NULL);
@@ -612,14 +589,14 @@ static void fs_write(Ixp9Req *r)
 
 static void fs_clunk(Ixp9Req *r)
 {
-	debug ("fs_clunk fid:%d\n", r->fid->fid);
+	debug ("fs_clunk fid:%lu\n", r->fid->fid);
 
 	respond (r, NULL);
 }
 
 static void fs_flush(Ixp9Req *r)
 {
-	debug ("fs_flush fid:%d\n", r->fid->fid);
+	debug ("fs_flush fid:%lu\n", r->fid->fid);
 
 	respond(r, NULL);
 }
@@ -629,10 +606,10 @@ static void fs_attach(Ixp9Req *r)
 	r->fid->qid.type = P9_QTDIR;
 	r->fid->qid.version = 0;
 	r->fid->qid.path = 0;
-	r->fid->aux = newfidaux("/");
+	r->fid->aux = newfidaux(0);
 	r->ofcall.rattach.qid = r->fid->qid;
 
-	debug ("fs_attach fid:%u\n", r->fid->fid);
+	debug ("fs_attach fid:%lu\n", r->fid->fid);
 
 	respond (r, NULL);
 }
@@ -653,9 +630,16 @@ static void fs_remove(Ixp9Req *r)
 
 static void fs_freefid(IxpFid *f)
 {
+	FidAux *faux = f->aux;
+
 	debug ("fs_freefid");
 
-	if (f->aux != NULL) {
+	if (faux != NULL) {
+		if (faux->fim != NULL) {
+			//free(faux->fim->image);
+			free(faux->fim);
+		}
+
 		free (f->aux);
 		f->aux = NULL;
 
@@ -704,9 +688,7 @@ main(int argc, char *argv[]) {
 	int i, fd;
 	IxpConn *acceptor;
 	freenect_context *f_ctx;
-#ifdef USE_JPEG
 	float v;
-#endif
 
 	if (argc != 2) {
 		fprintf (stderr, "usage:\n\t%s proto!addr[!port]\n", argv[0]);
@@ -727,13 +709,11 @@ main(int argc, char *argv[]) {
 
 	freenect_sync_set_led (led, 0);
 
-#ifdef USE_JPEG
 	for (i = 0; i < 2048; i++) {
 		v = i/2048.0;
 		v = powf(v, 3) * 6;
 		d2rlut[i] = v * 6 * 256;
 	}
-#endif
 
 #ifdef USE_AUDIO
 	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
@@ -745,10 +725,6 @@ main(int argc, char *argv[]) {
 	freenect_set_audio_in_callback (f_dev, in_callback);
 	freenect_start_audio (f_dev);
 #endif
-
-	for (i = 0; i < 2; i++)
-		if (imgs[i].image == NULL)
-			imgs[i].image = malloc (imgs[i].length);
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
