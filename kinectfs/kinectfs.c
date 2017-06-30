@@ -14,7 +14,8 @@ char *paths[] = { "/", "rgb", "depth", "tilt", "led",
 #ifdef USE_AUDIO
 	"mic0", "mic1", "mic2", "mic3",
 #endif
-	 NULL, NULL };
+	 };
+int Npaths = (sizeof(paths)/sizeof(paths[0]));
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -43,7 +44,7 @@ fnametopath(char *name) {
 	if (q != NULL)
 		name = q + 1;
 
-	for (i = 0; paths[i] != NULL; i++) {
+	for (i = 0; i < Npaths; i++) {
 		q = paths[i];
 		while (*q == '/')
 			q++;
@@ -89,7 +90,7 @@ istime(struct timeval *last, double epsilon) {
 
 int tilt;
 int led = 1;
-int depthmode = 0;
+int depthmode = 4;
 #ifdef USE_AUDIO
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
@@ -103,10 +104,6 @@ size_t audiohead[4] = { 0, 0, 0, 0 };
 int
 dostat(int path, IxpStat *stat) {
 	static char *none = "none";
-
-	if (path < 0) {
-		return -1;
-	}
 
 	stat->type = 0;
 	stat->dev = 0;
@@ -221,6 +218,11 @@ static void fs_open(Ixp9Req *r)
 	int j, k, l, m;
 	int path = r->fid->qid.path;
 
+	if (path < 0 || path >= Npaths) {
+		respond(r, "file not found");
+		return;
+	}
+
 	debug ("fs_open %s %lu\n", paths[path], r->fid->fid);
 
 	r->fid->aux = newfidaux(path);
@@ -313,12 +315,12 @@ static void fs_walk(Ixp9Req *r)
 	int path;
 	FidAux *f = r->fid->aux;
 
-	if (f == NULL) {
-		respond (r, "fs_walk (f == NULL)");
+	path = r->fid->qid.path;
+
+	if (path < 0 || path >= Npaths) {
+		respond(r, "file not found");
 		return;
 	}
-
-	path = r->fid->qid.path;
 
 	debug ("fs_walk from %s fid:%lu newfid:%lu\n", paths[path], r->fid->fid, r->newfid->fid);
 
@@ -326,7 +328,7 @@ static void fs_walk(Ixp9Req *r)
 		respond (r, NULL);
 		return;
 	} else if (r->ifcall.twalk.nwname != 1) {
-		respond (r, "no such file");
+		respond (r, "file not found");
 		return;
 	} else if (strcmp(r->ifcall.twalk.wname[0], "..") == 0) {
 		path = 0;
@@ -334,8 +336,8 @@ static void fs_walk(Ixp9Req *r)
 		path = fnametopath(r->ifcall.twalk.wname[0]);
 	}
 
-	if (path < 0 || path >= (sizeof(paths)/sizeof(paths[0]))) {
-		respond (r, "no such file");
+	if (path < 0 || path > Npaths) {
+		respond (r, "file not found");
 		return;
 	}
 
@@ -365,14 +367,14 @@ static void fs_read(Ixp9Req *r)
 	static struct timeval lasttilt = { 0, 0 };
 	int i;
 
-	if (f == NULL) {
-		respond(r, "fs_read (fid->aux == NULL)\n");
-		return;
-	}
-
 	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
 
 	path = r->fid->qid.path;
+
+	if (path < 0 || path >= Npaths) {
+		respond(r, "file not found");
+		return;
+	}
 
 	if (r->ifcall.tread.offset == 0)
 		f->offset = 0;
@@ -381,7 +383,7 @@ static void fs_read(Ixp9Req *r)
 	case 0:
 		f->index++;
 		// END OF FILES
-		if (paths[f->index] == NULL) {
+		if (f->index >= Npaths) {
 			respond(r, NULL);
 			return;
 		}
@@ -505,10 +507,16 @@ static void fs_stat(Ixp9Req *r)
 	IxpMsg m;
 	int size;
 	char *buf;
+	int path = r->fid->qid.path;
 
 	debug ("fs_stat fid:%lu\n", r->fid->fid);
 
-	size = dostat(r->fid->qid.path, &stat);
+	if (path < 0 || path >= Npaths) {
+		respond(r, "file not found");
+		return;
+	}
+
+	size = dostat(path, &stat);
 
 	buf = malloc (size);
 	m = ixp_message(buf, size, MsgPack);
@@ -523,16 +531,14 @@ static void fs_write(Ixp9Req *r)
 {
 	FidAux *f = r->fid->aux;
 	char *buf;
-	int path;
+	int path = r->fid->qid.path;
 
 	debug ("fs_write\n");
 
-	if (f == NULL) {
-		respond (r, "fs_write (fid->aux == nil)");
+	if (path < 0 || path >= Npaths) {
+		respond (r, "file not found");
 		return;
 	}
-
-	path = r->fid->qid.path;
 
 	if (r->ifcall.twrite.count == 0) {
 		mtimes[path] = time(NULL);
@@ -546,7 +552,7 @@ static void fs_write(Ixp9Req *r)
 
 	switch (path) {
 	default:
-		respond(r, "not even implemented");
+		respond(r, "permission denied");
 		break;
 	case 2:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
@@ -621,14 +627,14 @@ static void fs_create(Ixp9Req *r)
 {
 	debug ("fs_create\n");
 
-	respond (r, "not even implemented");
+	respond (r, "permission denied");
 }
 
 static void fs_remove(Ixp9Req *r)
 {
 	debug ("fs_remove\n");
 
-	respond (r, "removals not implemented");
+	respond (r, "permission denied");
 }
 
 static void fs_freefid(IxpFid *f)
@@ -639,7 +645,7 @@ static void fs_freefid(IxpFid *f)
 
 	if (faux != NULL) {
 		if (faux->fim != NULL) {
-			//free(faux->fim->image);
+			free(faux->fim->image);
 			free(faux->fim);
 		}
 
