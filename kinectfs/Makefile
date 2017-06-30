@@ -1,6 +1,6 @@
 CFLAGS=-g
 
-all: kinectfs depthtorgb
+all: kinectfs
 
 clean:
 	rm -f kinectfs depthtorgb rgbtohsv xrgb gtkrgbanim *.o *~
