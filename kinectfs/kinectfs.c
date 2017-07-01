@@ -20,12 +20,14 @@ unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 typedef struct {
-	struct timeval last;
 	unsigned char* image;
 	unsigned long length;
 } FrnctImg;
 static FrnctImg rgbimg;
 static FrnctImg depthimg;
+static struct timeval rgbdlast;
+static freenect_raw_tilt_state *tiltstate = NULL;
+static struct timeval tiltlast;
 
 typedef struct _FidAux {
 	unsigned int 	version;
@@ -228,23 +230,16 @@ static void fs_open(Ixp9Req *r)
 	r->fid->aux = newfidaux(path);
 	f = r->fid->aux;
 
-	if (path == 1) {
-		if (istime(&rgbimg.last, 1.0/30.0)) {
+	if (path == 1 || path == 2) {
+		if (istime(&rgbdlast, 1.0/30.0)) {
+			freenect_sync_get_tilt_state(&tiltstate, 0);
+			gettimeofday(&tiltlast, NULL);
 			if (freenect_sync_get_video((void**)(&buf), &ts, 0, FREENECT_VIDEO_RGB) != 0) {
 				respond(r, "freenect_sync_get_video");
 				return;
 			}
 			memcpy(rgbimg.image, buf, 640*480*3);
 			rgbimg.length = 640*480*3;
-#ifdef USE_JPEG
-			compressjpg(&rgbimg);
-#endif
-		}
-		memcpy(f->fim->image, rgbimg.image, rgbimg.length);
-		f->fim->length = rgbimg.length;
-	}
-	if (path == 2) {
-		if (istime(&depthimg.last, 1.0/30.0)) {
 			if (freenect_sync_get_depth((void**)(&buf), &ts, 0, depthmode) != 0) {
 				respond(r, "freenect_sync_get_depth");
 				return;
@@ -299,9 +294,16 @@ static void fs_open(Ixp9Req *r)
 			}
 			depthimg.length = 640*480*3;
 #ifdef USE_JPEG
+			compressjpg(&rgbimg);
 			compressjpg(&depthimg);
 #endif
 		}
+	}
+	if (path == 1) {
+		memcpy(f->fim->image, rgbimg.image, rgbimg.length);
+		f->fim->length = rgbimg.length;
+	}
+	if (path == 2) {
 		memcpy(f->fim->image, depthimg.image, depthimg.length);
 		f->fim->length = depthimg.length;
 	}
@@ -311,7 +313,6 @@ static void fs_open(Ixp9Req *r)
 
 static void fs_walk(Ixp9Req *r)
 {
-	char *name = malloc (PATH_MAX);
 	int path;
 	FidAux *f = r->fid->aux;
 
@@ -362,9 +363,7 @@ static void fs_read(Ixp9Req *r)
 	char *buf;
 	int n, size;
 	int path;
-	freenect_raw_tilt_state *state;
 	static double dx, dy, dz;
-	static struct timeval lasttilt = { 0, 0 };
 	int i;
 
 	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
@@ -459,21 +458,21 @@ static void fs_read(Ixp9Req *r)
 		return;
 #endif
 	case 3:
-		if (f->offset == 0) {
+		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 
-			if (freenect_sync_get_tilt_state(&state, 0) != 0) {
+			if ((tiltstate == NULL || istime(&tiltlast, 1.0/30.0)) &&
+			    freenect_sync_get_tilt_state(&tiltstate, 0) != 0) {
 				respond(r, "freenect_sync_get_tilt_state");
 				return;
 			} else {
-				freenect_get_mks_accel (state, &dx, &dy, &dz);
+				freenect_get_mks_accel (tiltstate, &dx, &dy, &dz);
 
 				buf = malloc (size);
 				snprintf(buf, size, "%d %lf %lf %lf\n", tilt, dx, dy, dz);
 				r->ofcall.rread.count = strlen(buf);
 				r->ofcall.rread.data = buf;
 			}
-			f->offset += r->ofcall.rread.count;
 			atimes[path] = time(NULL);
 		} else {
 			r->ofcall.rread.count = 0;
@@ -481,7 +480,7 @@ static void fs_read(Ixp9Req *r)
 		respond(r, NULL);
 		return;
 	case 4:
-		if (f->offset == 0) {
+		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 			buf = malloc (size);
 
@@ -489,7 +488,6 @@ static void fs_read(Ixp9Req *r)
 			r->ofcall.rread.count = strlen(buf);
 			r->ofcall.rread.data = buf;
 
-			f->offset++;
 			atimes[path] = time(NULL);
 		} else {
 			r->ofcall.rread.count = 0;
@@ -618,7 +616,7 @@ static void fs_attach(Ixp9Req *r)
 	r->fid->aux = newfidaux(0);
 	r->ofcall.rattach.qid = r->fid->qid;
 
-	printf ("fs_attach fid:%lu\n", r->fid->fid);
+	debug ("fs_attach fid:%lu\n", r->fid->fid);
 
 	respond (r, NULL);
 }
@@ -708,7 +706,9 @@ main(int argc, char *argv[]) {
 		perror ("freenect_init");
 		return -1;
 	}
+#ifdef USE_AUDIO
 	freenect_select_subdevices (f_ctx, FREENECT_DEVICE_AUDIO);
+#endif
 
 	if (freenect_num_devices (f_ctx) < 1) {
 		fprintf (stderr, "kinect not found\n");
@@ -734,8 +734,8 @@ main(int argc, char *argv[]) {
 	freenect_set_audio_in_callback (f_dev, in_callback);
 	freenect_start_audio (f_dev);
 #endif
-	memset(&rgbimg.last, 0, sizeof(struct timeval));
-	memset(&depthimg.last, 0, sizeof(struct timeval));
+	memset(&rgbdlast, 0, sizeof(struct timeval));
+	memset(&tiltlast, 0, sizeof(struct timeval));
 	rgbimg.image = calloc(1, 640*480*3);
 	depthimg.image = calloc(1, 640*480*3);
 	rgbimg.length = 640*480*3;
