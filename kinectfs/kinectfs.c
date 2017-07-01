@@ -305,7 +305,7 @@ static void fs_open(Ixp9Req *r)
 		}
 
 RGBDLOCK:
-		while(rgbdlock == 1) usleep(1000);
+		while(rgbdlock != 0) usleep(1000);
 		switch(path){
 		case 1:
 			memcpy(f->fim->image, rgbimg.image, rgbimg.length);
@@ -320,7 +320,7 @@ RGBDLOCK:
 			respond(r, "file not found");
 			return;
 		}
-		if(rgbdlock == 1)
+		if(rgbdlock != 0)
 			goto RGBDLOCK;
 	}
 
