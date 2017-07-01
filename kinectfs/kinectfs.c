@@ -26,6 +26,7 @@ typedef struct {
 static FrnctImg rgbimg;
 static FrnctImg depthimg;
 static struct timeval rgbdlast;
+static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
 
@@ -93,6 +94,7 @@ istime(struct timeval *last, double epsilon) {
 int tilt;
 int led = 1;
 int depthmode = 4;
+
 #ifdef USE_AUDIO
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
@@ -214,7 +216,8 @@ static void fs_open(Ixp9Req *r)
 {
 	FidAux *f;
 	unsigned int ts;
-	unsigned char *buf;
+	unsigned char *rgbbuf;
+	unsigned char *depthbuf;
 	int c;
 	unsigned short s;
 	int j, k, l, m;
@@ -234,19 +237,20 @@ static void fs_open(Ixp9Req *r)
 		if (istime(&rgbdlast, 1.0/30.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
-			if (freenect_sync_get_video((void**)(&buf), &ts, 0, FREENECT_VIDEO_RGB) != 0) {
+			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, FREENECT_VIDEO_RGB) != 0) {
 				respond(r, "freenect_sync_get_video");
 				return;
 			}
-			memcpy(rgbimg.image, buf, 640*480*3);
-			rgbimg.length = 640*480*3;
-			if (freenect_sync_get_depth((void**)(&buf), &ts, 0, depthmode) != 0) {
+			if (freenect_sync_get_depth((void**)(&depthbuf), &ts, 0, depthmode) != 0) {
 				respond(r, "freenect_sync_get_depth");
 				return;
 			}
+			rgbdlock = 1;
+			memcpy(rgbimg.image, rgbbuf, 640*480*3);
+			rgbimg.length = 640*480*3;
 			for (j = 0; j < (640 * 480); j++) {
-				s = buf[j * 2];
-				s |= buf[j * 2 + 1] << 8;
+				s = depthbuf[j * 2];
+				s |= depthbuf[j * 2 + 1] << 8;
 	
 				if (s >= 2048)
 					s = 0;
@@ -297,15 +301,27 @@ static void fs_open(Ixp9Req *r)
 			compressjpg(&rgbimg);
 			compressjpg(&depthimg);
 #endif
+			rgbdlock = 0;
 		}
-	}
-	if (path == 1) {
-		memcpy(f->fim->image, rgbimg.image, rgbimg.length);
-		f->fim->length = rgbimg.length;
-	}
-	if (path == 2) {
-		memcpy(f->fim->image, depthimg.image, depthimg.length);
-		f->fim->length = depthimg.length;
+
+RGBDLOCK:
+		while(rgbdlock == 1) usleep(1000);
+		switch(path){
+		case 1:
+			memcpy(f->fim->image, rgbimg.image, rgbimg.length);
+			
+			f->fim->length = rgbimg.length;
+			break;
+		case 2:
+			memcpy(f->fim->image, depthimg.image, depthimg.length);
+			f->fim->length = depthimg.length;
+			break;
+		default:
+			respond(r, "file not found");
+			return;
+		}
+		if(rgbdlock == 1)
+			goto RGBDLOCK;
 	}
 
 	respond (r, NULL);
