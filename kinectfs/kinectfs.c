@@ -10,10 +10,25 @@
 #endif
 
 unsigned short d2rlut[2048];
+enum {
+	Qroot = 0,
+	Qrgb,
+	Qdepth,
+	Qtilt,
+	Qled,
+#ifdef USE_AUDIO
+	Qmic0,
+	Qmic1,
+	Qmic2,
+	Qmic3,
+#endif
+	Qextra,
+};
 char *paths[] = { "/", "rgb", "depth", "tilt", "led",
 #ifdef USE_AUDIO
 	"mic0", "mic1", "mic2", "mic3",
 #endif
+	"extra",
 	 };
 int Npaths = (sizeof(paths)/sizeof(paths[0]));
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -25,10 +40,12 @@ typedef struct {
 } FrnctImg;
 static FrnctImg rgbimg;
 static FrnctImg depthimg;
+static FrnctImg extraimg;
 static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
+#define HDRLEN 15 
 
 typedef struct _FidAux {
 	unsigned int 	version;
@@ -64,9 +81,9 @@ newfidaux(int path) {
 	FidAux *ret;
 
 	ret = calloc (1, sizeof(FidAux));
-	if (path == 1 || path == 2) {
+	if (path == Qrgb || path == Qdepth || path == Qextra) {
 		ret->fim = calloc(1, sizeof(FrnctImg));
-		ret->fim->length = 640*480*3;
+		ret->fim->length = 640*480*3+HDRLEN;
 		ret->fim->image = calloc(1, ret->fim->length);
 	}
 
@@ -116,12 +133,12 @@ dostat(int path, IxpStat *stat) {
 	stat->qid.path = path;
 	stat->mode = P9_DMREAD;
 	switch (stat->qid.path) {
-	case 0:
+	case Qroot:
 		stat->mode |= P9_DMDIR|P9_DMEXEC;
 		break;
-	case 2:
-	case 3:
-	case 4:
+	case Qdepth:
+	case Qtilt:
+	case Qled:
 		stat->mode |= P9_DMWRITE;
 	default:
 		break;
@@ -197,15 +214,16 @@ compressjpg(FrnctImg *img)
 
 	jpeg_start_compress( &cinfo, TRUE );
 	while( cinfo.next_scanline < cinfo.image_height ) {
-		row_pointer[0] = &img->image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components];
+		row_pointer[0] = &img->image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components + HDRLEN];
 
 		jpeg_write_scanlines( &cinfo, row_pointer, 1 );
 	}
 
 	jpeg_finish_compress( &cinfo );
 
-	img->length = buflen;
-	memcpy(img->image, buf, buflen);
+	if (buflen < (640*480*3+HDRLEN))
+		img->length = buflen;
+	memcpy(img->image, buf, img->length);
 
 	jpeg_destroy_compress( &cinfo );
 	free(buf);
@@ -233,7 +251,8 @@ static void fs_open(Ixp9Req *r)
 	r->fid->aux = newfidaux(path);
 	f = r->fid->aux;
 
-	if (path == 1 || path == 2) {
+	if (path == Qrgb || path == Qdepth || path == Qextra) {
+		r->ofcall.ropen.iounit = 680*480*4;
 		if (istime(&rgbdlast, 1.0/30.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
@@ -246,8 +265,15 @@ static void fs_open(Ixp9Req *r)
 				return;
 			}
 			rgbdlock = 1;
-			memcpy(rgbimg.image, rgbbuf, 640*480*3);
-			rgbimg.length = 640*480*3;
+
+			rgbimg.length = 640*480*3+HDRLEN;
+			depthimg.length = 640*480*3+HDRLEN;
+			extraimg.length = 640*480*3+HDRLEN;
+			memcpy(rgbimg.image, "P6\n640 480\n255\n", HDRLEN);
+			memcpy(depthimg.image, "P6\n640 480\n255\n", HDRLEN);
+			memcpy(extraimg.image, "P6\n640 480\n255\n", HDRLEN);
+
+			memcpy(rgbimg.image+HDRLEN, rgbbuf, rgbimg.length-HDRLEN);
 			for (j = 0; j < (640 * 480); j++) {
 				s = depthbuf[j * 2];
 				s |= depthbuf[j * 2 + 1] << 8;
@@ -257,49 +283,54 @@ static void fs_open(Ixp9Req *r)
 
 				k = d2rlut[s];
 				c = k & 0xff;
+				// TODO only works when HDRLEN is multiple of 3
+				l = j + (HDRLEN/3);
 
 				switch (k >> 8) {
 				case 0:
-					depthimg.image[j * 3] = 255;
-					depthimg.image[j * 3 + 1] = 255 - c;
-					depthimg.image[j * 3 + 2] = 255 - c;
+					depthimg.image[l * 3] = 255;
+					depthimg.image[l * 3 + 1] = 255 - c;
+					depthimg.image[l * 3 + 2] = 255 - c;
 					break;
 				case 1:
-					depthimg.image[j * 3] = 255;
-					depthimg.image[j * 3 + 1] = c;
-					depthimg.image[j * 3 + 2] = 0;
+					depthimg.image[l * 3] = 255;
+					depthimg.image[l * 3 + 1] = c;
+					depthimg.image[l * 3 + 2] = 0;
 					break;
 				case 2:
-					depthimg.image[j * 3] = 255 - c;
-					depthimg.image[j * 3 + 1] = 255;
-					depthimg.image[j * 3 + 2] = 0;
+					depthimg.image[l * 3] = 255 - c;
+					depthimg.image[l * 3 + 1] = 255;
+					depthimg.image[l * 3 + 2] = 0;
 					break;
 				case 3:
-					depthimg.image[j * 3] = 0;
-					depthimg.image[j * 3 + 1] = 255;
-					depthimg.image[j * 3 + 2] = c;
+					depthimg.image[l * 3] = 0;
+					depthimg.image[l * 3 + 1] = 255;
+					depthimg.image[l * 3 + 2] = c;
 					break;
 				case 4:
-					depthimg.image[j * 3] = 0;
-					depthimg.image[j * 3 + 1] = 255 - c;
-					depthimg.image[j * 3 + 2] = 255;
+					depthimg.image[l * 3] = 0;
+					depthimg.image[l * 3 + 1] = 255 - c;
+					depthimg.image[l * 3 + 2] = 255;
 					break;
 				case 5:
-					depthimg.image[j * 3] = 0;
-					depthimg.image[j * 3 + 1] = 0;
-					depthimg.image[j * 3 + 2] = 255 - c;
+					depthimg.image[l * 3] = 0;
+					depthimg.image[l * 3 + 1] = 0;
+					depthimg.image[l * 3 + 2] = 255 - c;
 					break;
 				default:
-					depthimg.image[j * 3] = 0;
-					depthimg.image[j * 3 + 1] = 0;
-					depthimg.image[j * 3 + 2] = 0;
+					depthimg.image[l * 3] = 0;
+					depthimg.image[l * 3 + 1] = 0;
+					depthimg.image[l * 3 + 2] = 0;
 					break;
 				}
+				extraimg.image[l * 3] = round(depthimg.image[l * 3] * 0.4 + rgbimg.image[l * 3] * 0.6);
+				extraimg.image[l * 3 + 1] = round(depthimg.image[l * 3 + 1] * 0.4 + rgbimg.image[l * 3 + 1] * 0.6);
+				extraimg.image[l * 3 + 2] = round(depthimg.image[l * 3 + 2] * 0.4 + rgbimg.image[l * 3 + 2] * 0.6);
 			}
-			depthimg.length = 640*480*3;
 #ifdef USE_JPEG
 			compressjpg(&rgbimg);
 			compressjpg(&depthimg);
+			compressjpg(&extraimg);
 #endif
 			rgbdlock = 0;
 		}
@@ -307,14 +338,18 @@ static void fs_open(Ixp9Req *r)
 RGBDLOCK:
 		while(rgbdlock != 0) usleep(1000);
 		switch(path){
-		case 1:
+		case Qrgb:
 			memcpy(f->fim->image, rgbimg.image, rgbimg.length);
 			
 			f->fim->length = rgbimg.length;
 			break;
-		case 2:
+		case Qdepth:
 			memcpy(f->fim->image, depthimg.image, depthimg.length);
 			f->fim->length = depthimg.length;
+			break;
+		case Qextra:
+			memcpy(f->fim->image, extraimg.image, extraimg.length);
+			f->fim->length = extraimg.length;
 			break;
 		default:
 			respond(r, "file not found");
@@ -395,7 +430,7 @@ static void fs_read(Ixp9Req *r)
 		f->offset = 0;
 
 	switch (path) {
-	case 0:
+	case Qroot:
 		f->index++;
 		// END OF FILES
 		if (f->index >= Npaths) {
@@ -419,8 +454,9 @@ static void fs_read(Ixp9Req *r)
 
 		respond (r, NULL);
 		return;
-	case 1:
-	case 2:
+	case Qrgb:
+	case Qdepth:
+	case Qextra:
 		size = r->ifcall.tread.count;
 		if (size < 0) {
 			respond(r, "no.");
@@ -436,18 +472,18 @@ static void fs_read(Ixp9Req *r)
 			r->ofcall.rread.count = size;
 
 		if (r->ofcall.rread.count != 0) {
-			r->ofcall.rread.data = calloc(1, f->fim->length);
+			r->ofcall.rread.data = calloc(1, f->fim->length+16);
 			memcpy (r->ofcall.rread.data, &f->fim->image[r->ifcall.tread.offset], r->ofcall.rread.count);
 		}
 
 		respond (r, NULL);
 		return;
 #ifdef USE_AUDIO
-	case 5:
-	case 6:
-	case 7:
-	case 8:
-		i = path - 5;
+	case Qmic0:
+	case Qmic1:
+	case Qmic2:
+	case Qmic3:
+		i = path - Qmic0;
 
 		size = r->ifcall.tread.count;
 		buf = malloc (size);
@@ -473,7 +509,7 @@ static void fs_read(Ixp9Req *r)
 		respond(r, NULL);
 		return;
 #endif
-	case 3:
+	case Qtilt:
 		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 
@@ -495,7 +531,7 @@ static void fs_read(Ixp9Req *r)
 		}
 		respond(r, NULL);
 		return;
-	case 4:
+	case Qled:
 		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 			buf = malloc (size);
@@ -568,7 +604,7 @@ static void fs_write(Ixp9Req *r)
 	default:
 		respond(r, "permission denied");
 		break;
-	case 2:
+	case Qdepth:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
 		depthmode = atoi(buf);
 
@@ -578,7 +614,7 @@ static void fs_write(Ixp9Req *r)
 		mtimes[path] = time(NULL);
 		respond(r, NULL);
 		break;
-	case 3:
+	case Qtilt:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
 		tilt = atoi (buf);
 
@@ -590,7 +626,7 @@ static void fs_write(Ixp9Req *r)
 			respond(r, NULL);
 		}
 		break;
-	case 4:
+	case Qled:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
 		led = atoi (buf);
 
@@ -676,7 +712,7 @@ static void fs_wstat(Ixp9Req *r)
 {
 	debug ("fs_wstat\n");
 
-	respond (r, "permission denied");
+	respond (r, NULL);
 }
 
 static IxpServer server;
@@ -752,10 +788,12 @@ main(int argc, char *argv[]) {
 #endif
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
-	rgbimg.image = calloc(1, 640*480*3);
-	depthimg.image = calloc(1, 640*480*3);
-	rgbimg.length = 640*480*3;
-	depthimg.length = 640*480*3;
+	rgbimg.length = 640*480*3+HDRLEN;
+	depthimg.length = 640*480*3+HDRLEN;
+	extraimg.length = 640*480*3+HDRLEN;
+	rgbimg.image = calloc(1, rgbimg.length);
+	depthimg.image = calloc(1, depthimg.length);
+	extraimg.image = calloc(1, extraimg.length);
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
