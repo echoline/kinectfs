@@ -676,7 +676,7 @@ static void fs_wstat(Ixp9Req *r)
 {
 	debug ("fs_wstat\n");
 
-	respond (r, NULL);
+	respond (r, "permission denied");
 }
 
 static IxpServer server;
