@@ -44,6 +44,7 @@ typedef struct {
 	unsigned int height;
 	unsigned int components;
 	unsigned int colorspace;
+	unsigned char hdrlen;
 } FrnctImg;
 static FrnctImg rgbimg;
 static FrnctImg depthimg;
@@ -54,7 +55,8 @@ static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
-#define HDRLEN 15 
+#define KWIDTH 640 
+#define KHEIGHT 480
 
 typedef struct _FidAux {
 	unsigned int 	version;
@@ -92,11 +94,8 @@ newfidaux(int path) {
 	ret = calloc (1, sizeof(FidAux));
 	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge || path == Qbw) {
 		ret->fim = calloc(1, sizeof(FrnctImg));
-		if (path != Qbw)
-			ret->fim->length = 640*480*3+HDRLEN;
-		else
-			ret->fim->length = 640*480*1+HDRLEN;
-		ret->fim->image = calloc(1, ret->fim->length);
+		// shouldn't need more than this
+		ret->fim->image = calloc(1, KWIDTH*2*KHEIGHT*2*4);
 	}
 
 	return ret;
@@ -226,7 +225,7 @@ compressjpg(FrnctImg *img)
 
 	jpeg_start_compress( &cinfo, TRUE );
 	while( cinfo.next_scanline < cinfo.image_height ) {
-		row_pointer[0] = &img->image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components + HDRLEN];
+		row_pointer[0] = &img->image[ cinfo.next_scanline * cinfo.image_width * cinfo.input_components + img->hdrlen];
 
 		jpeg_write_scanlines( &cinfo, row_pointer, 1 );
 	}
@@ -264,71 +263,77 @@ static void fs_open(Ixp9Req *r)
 	f = r->fid->aux;
 
 	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge || path == Qbw) {
-		r->ofcall.ropen.iounit = 680*480*4;
+//		r->ofcall.ropen.iounit = 680*480*4;
 		if (istime(&rgbdlast, 1.0/30.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
-			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, FREENECT_VIDEO_RGB) != 0) {
+			if (freenect_sync_get_video_with_res((void**)(&rgbbuf), &ts, 0, FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB) != 0) {
 				respond(r, "freenect_sync_get_video");
 				return;
 			}
-			if (freenect_sync_get_depth((void**)(&depthbuf), &ts, 0, depthmode) != 0) {
+			if (freenect_sync_get_depth_with_res((void**)(&depthbuf), &ts, 0, FREENECT_RESOLUTION_MEDIUM, depthmode) != 0) {
 				respond(r, "freenect_sync_get_depth");
 				return;
 			}
 			rgbdlock = 1;
 
-			rgbimg.width = 640;
-			rgbimg.height = 480;
+			rgbimg.width = KWIDTH;
+			rgbimg.height = KHEIGHT;
 			rgbimg.components = 3;
 			rgbimg.colorspace = JCS_RGB;
-			rgbimg.length = rgbimg.width*rgbimg.height*rgbimg.components+HDRLEN;
-			memcpy(rgbimg.image, "P6\n640 480\n255\n", HDRLEN);
+			rgbimg.hdrlen = 15;
+			rgbimg.length = rgbimg.width*rgbimg.height*rgbimg.components+rgbimg.hdrlen;
+			memcpy(rgbimg.image, "P6\n640 480\n255\n", rgbimg.hdrlen);
 
-			depthimg.width = 640;
-			depthimg.height = 480;
-			depthimg.components = 3;
-			depthimg.colorspace = JCS_RGB;
-			depthimg.length = depthimg.width*depthimg.height*depthimg.components+HDRLEN;
-			memcpy(depthimg.image, "P6\n640 480\n255\n", HDRLEN);
+			depthimg.width = KWIDTH;
+			depthimg.height = KHEIGHT;
+			depthimg.components = 1;
+			depthimg.colorspace = JCS_GRAYSCALE;
+			depthimg.hdrlen = 15;
+			depthimg.length = depthimg.width*depthimg.height*depthimg.components+depthimg.hdrlen;
+			memcpy(depthimg.image, "P5\n640 480\n255\n", depthimg.hdrlen);
 
-			extraimg.width = 640;
-			extraimg.height = 480;
-			extraimg.components = 3;
-			extraimg.colorspace = JCS_RGB;
-			extraimg.length = extraimg.width*extraimg.height*extraimg.components+HDRLEN;
-			memcpy(extraimg.image, "P6\n640 480\n255\n", HDRLEN);
+			extraimg.width = KWIDTH*2;
+			extraimg.height = KHEIGHT*2;
+			extraimg.components = 1;
+			extraimg.colorspace = JCS_GRAYSCALE;
+			extraimg.hdrlen = 17;
+			extraimg.length = extraimg.width*extraimg.height*extraimg.components+extraimg.hdrlen;
+			memcpy(extraimg.image, "P5\n1280 1024\n255\n", extraimg.hdrlen);
 
-			edgeimg.width = 640;
-			edgeimg.height = 480;
-			edgeimg.components = 3;
-			edgeimg.colorspace = JCS_RGB;
-			edgeimg.length = edgeimg.width*edgeimg.height*edgeimg.components+HDRLEN;
-			memcpy(edgeimg.image, "P6\n640 480\n255\n", HDRLEN);
+			edgeimg.width = KWIDTH;
+			edgeimg.height = KHEIGHT;
+			edgeimg.components = 1;
+			edgeimg.colorspace = JCS_GRAYSCALE;
+			edgeimg.hdrlen = 15;
+			edgeimg.length = edgeimg.width*edgeimg.height*edgeimg.components+edgeimg.hdrlen;
+			memcpy(edgeimg.image, "P5\n640 480\n255\n", edgeimg.hdrlen);
 
-			bwimg.width = rgbimg.width;
-			bwimg.height = rgbimg.height;
+			bwimg.width = KWIDTH;
+			bwimg.height = KHEIGHT;
 			bwimg.components = 1;
 			bwimg.colorspace = JCS_GRAYSCALE;
-			bwimg.length = bwimg.width*bwimg.height*bwimg.components+HDRLEN;
-			memcpy(rgbimg.image, "P5\n640 480\n255\n", HDRLEN);
+			bwimg.hdrlen = 15;
+			bwimg.length = bwimg.width*bwimg.height*bwimg.components+bwimg.hdrlen;
+			memcpy(rgbimg.image, "P5\n640 480\n255\n", bwimg.hdrlen);
 
-			memcpy(rgbimg.image+HDRLEN, rgbbuf, rgbimg.length-HDRLEN);
-			memset(edgeimg.image+HDRLEN, 0, edgeimg.length-HDRLEN);
-			// need this first for edges
-			for (j = 0; j < (640 * 480); j++) {
+			memcpy(rgbimg.image+rgbimg.hdrlen, rgbbuf, rgbimg.length-rgbimg.hdrlen);
+			memset(edgeimg.image+edgeimg.hdrlen, 0, edgeimg.length-edgeimg.hdrlen);
+			// TODO remove later
+			memset(extraimg.image+extraimg.hdrlen+2, 0, extraimg.length-extraimg.hdrlen-2);
+			// need black and white first for edges
+			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
+				j = y * KWIDTH + x;
 				c = r2blut[((*(uint32_t*)&rgbbuf[j * 3]) & 0xFFFFFF00) >> 8];
-				bwimg.image[j + HDRLEN] = (c & 0xFF);
+				extraimg.image[y * (KWIDTH*2) + x + extraimg.hdrlen] = bwimg.image[j + bwimg.hdrlen] = (c & 0xFF);
 			}
-			for (x = 0; x < 640; x++) for (y = 0; y < 480; y++) {
-				j = y * 640 + x;
-				// TODO only works when HDRLEN is multiple of 3
-				l = j + (HDRLEN/3);
+			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
+				j = y * KWIDTH + x;
+				l = j + bwimg.hdrlen;
 
-				if (x > 0 && x < 639 && y > 0 && y < 479) {
-					k = abs(bwimg.image[(j - 641) + HDRLEN] * -1 + bwimg.image[(j - 639) + HDRLEN] * 1 + bwimg.image[(j - 1) + HDRLEN] * -2 + bwimg.image[(j + 1) + HDRLEN] * 2 + bwimg.image[(j + 639) + HDRLEN] * -1 + bwimg.image[(j + 641) + HDRLEN] * 1 + bwimg.image[(j - 641) + HDRLEN] * 1 + bwimg.image[(j - 640) + HDRLEN] * 2 + bwimg.image[(j - 639) + HDRLEN] * 1 + bwimg.image[(j + 639) + HDRLEN] * -1 + bwimg.image[(j + 640) + HDRLEN] * -2 + bwimg.image[(j + 641) + HDRLEN] * -1);
-					if (k >= 140)
-						memset(&edgeimg.image[l * 3], k & 0xFF, 3);
+				if (x > 0 && x < (KWIDTH-1) && y > 0 && y < (KHEIGHT-1)) {
+					k = abs(bwimg.image[l - (KWIDTH+1)] * -1 + bwimg.image[l - (KWIDTH-1)] * 1 + bwimg.image[l - 1] * -2 + bwimg.image[l + 1] * 2 + bwimg.image[l + (KWIDTH-1)] * -1 + bwimg.image[l + (KWIDTH+1)] * 1 + bwimg.image[l - (KWIDTH+1)] * 1 + bwimg.image[l - KWIDTH] * 2 + bwimg.image[l - (KWIDTH-1)] * 1 + bwimg.image[l + (KWIDTH-1)] * -1 + bwimg.image[l + KWIDTH] * -2 + bwimg.image[l + (KWIDTH+1)] * -1);
+					extraimg.image[y * (KWIDTH*2) + x + KWIDTH + extraimg.hdrlen] = edgeimg.image[l] = k & 0xFF;
 				}
 
 				s = depthbuf[j * 2];
@@ -338,17 +343,7 @@ static void fs_open(Ixp9Req *r)
 					s = 0;
 
 				k = s & 0x7FF;
-				memcpy(&depthimg.image[l * 3], k2rlut[k], 3);
-
-				if (memcmp(&depthimg.image[l * 3], "\x00\x00\x00", 3) != 0)
-					for (k = 0; k < 3; k++)
-						extraimg.image[l * 3 + k] = (depthimg.image[l * 3 + k] * 0.3) + (bwimg.image[j + HDRLEN] * 0.7);
-				else
-					memset(&extraimg.image[l * 3], bwimg.image[j + HDRLEN], 3);
-				if (edgeimg.image[l * 3] != 0) {
-					extraimg.image[l * 3] = edgeimg.image[l * 3];
-					extraimg.image[l * 3 + 1] = extraimg.image[l * 3 + 2] = 0;
-				}
+				extraimg.image[(y+KHEIGHT) * (KWIDTH*2) + x + extraimg.hdrlen] = depthimg.image[l] = k >> 3;
 			}
 #ifdef USE_JPEG
 			compressjpg(&rgbimg);
@@ -854,11 +849,11 @@ main(int argc, char *argv[]) {
 #endif
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
-	rgbimg.length = 640*480*3+HDRLEN;
-	depthimg.length = 640*480*3+HDRLEN;
-	extraimg.length = 640*480*3+HDRLEN;
-	edgeimg.length = 640*480*3+HDRLEN;
-	bwimg.length = 640*480*1+HDRLEN;
+	rgbimg.length = 640*480*3+15;
+	depthimg.length = 640*480*1+15;
+	extraimg.length = 1280*1024*1+17;
+	edgeimg.length = 640*480*1+15;
+	bwimg.length = 640*480*1+15;
 	rgbimg.image = calloc(1, rgbimg.length);
 	depthimg.image = calloc(1, depthimg.length);
 	extraimg.image = calloc(1, extraimg.length);
