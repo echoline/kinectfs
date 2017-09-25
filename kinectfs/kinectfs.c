@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <unistd.h>
+#include <time.h>
 #include <math.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
@@ -122,6 +124,7 @@ istime(struct timeval *last, double epsilon) {
 int tilt;
 int led = 1;
 int depthmode = 4;
+int rgbmode = 0;
 
 #ifdef USE_AUDIO
 unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
@@ -267,11 +270,11 @@ static void fs_open(Ixp9Req *r)
 		if (istime(&rgbdlast, 1.0/30.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
-			if (freenect_sync_get_video_with_res((void**)(&rgbbuf), &ts, 0, FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB) != 0) {
+			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
 				respond(r, "freenect_sync_get_video");
 				return;
 			}
-			if (freenect_sync_get_depth_with_res((void**)(&depthbuf), &ts, 0, FREENECT_RESOLUTION_MEDIUM, depthmode) != 0) {
+			if (freenect_sync_get_depth((void**)(&depthbuf), &ts, 0, depthmode) != 0) {
 				respond(r, "freenect_sync_get_depth");
 				return;
 			}
@@ -360,7 +363,6 @@ RGBDLOCK:
 		switch(path){
 		case Qrgb:
 			memcpy(f->fim->image, rgbimg.image, rgbimg.length);
-			
 			f->fim->length = rgbimg.length;
 			break;
 		case Qdepth:
@@ -633,6 +635,16 @@ static void fs_write(Ixp9Req *r)
 	switch (path) {
 	default:
 		respond(r, "permission denied");
+		break;
+	case Qrgb:
+		r->ofcall.rwrite.count = r->ifcall.twrite.count;
+		rgbmode = atoi(buf);
+
+		if ((rgbmode % 7) != rgbmode)
+			rgbmode = 0;
+
+		mtimes[path] = time(NULL);
+		respond(r, NULL);
 		break;
 	case Qdepth:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
