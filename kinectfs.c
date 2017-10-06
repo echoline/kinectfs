@@ -38,7 +38,7 @@ enum {
 #endif
 	Npaths,
 };
-char *paths[] = { "/", "tilt", "led", "rgb.ppm", "depth.pnm", "extra.pnm",
+char *paths[] = { "/", "tilt", "led", "rgb.pnm", "depth.pnm", "extra.pnm",
 	"edge.pnm", "bw.pnm",
 #ifdef USE_JPEG
 	"rgb.jpg", "depth.jpg", "extra.jpg", "edge.jpg", "bw.jpg",
@@ -368,10 +368,10 @@ static void fs_open(Ixp9Req *r)
 
 			extraimg.width = KWIDTH*2;
 			extraimg.height = KHEIGHT*2;
-			extraimg.hdrlen = 17;
+			extraimg.hdrlen = 16;
 			extraimg.components = 1;
 			extraimg.length = extraimg.width*extraimg.height*extraimg.components+extraimg.hdrlen;
-			memcpy(extraimg.image, "P5\n1280 1024\n255\n", extraimg.hdrlen);
+			memcpy(extraimg.image, "P5\n1280 960\n255\n", extraimg.hdrlen);
 
 			edgeimg.width = KWIDTH;
 			edgeimg.height = KHEIGHT;
@@ -961,7 +961,7 @@ main(int argc, char *argv[]) {
 	memset(&tiltlast, 0, sizeof(struct timeval));
 	rgbimg.length = 640*480*3+15;
 	depthimg.length = 640*480*1+15;
-	extraimg.length = 1280*1024*1+17;
+	extraimg.length = 1280*960*1+16;
 	edgeimg.length = 640*480*1+15;
 	bwimg.length = 640*480*1+15;
 	rgbimg.image = calloc(1, rgbimg.length);
