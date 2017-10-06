@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <limits.h>
 #include <unistd.h>
 #include <time.h>
@@ -15,27 +16,37 @@ unsigned char r2blut[0x1000000];
 unsigned char k2rlut[0x800][3];
 enum {
 	Qroot = 0,
-	Qrgb,
-	Qdepth,
 	Qtilt,
 	Qled,
+	Qrgb,
+	Qdepth,
 	Qextra,
 	Qedge,
 	Qbw,
+#ifdef USE_JPEG
+	Qrgbjpg,
+	Qdepthjpg,
+	Qextrajpg,
+	Qedgejpg,
+	Qbwjpg,
+#endif
 #ifdef USE_AUDIO
 	Qmic0,
 	Qmic1,
 	Qmic2,
 	Qmic3,
 #endif
+	Npaths,
 };
-char *paths[] = { "/", "rgb", "depth", "tilt",
-	"led", "extra", "edge", "bw",
+char *paths[] = { "/", "tilt", "led", "rgb.ppm", "depth.pnm", "extra.pnm",
+	"edge.pnm", "bw.pnm",
+#ifdef USE_JPEG
+	"rgb.jpg", "depth.jpg", "extra.jpg", "edge.jpg", "bw.jpg",
+#endif
 #ifdef USE_AUDIO
 	"mic0", "mic1", "mic2", "mic3",
 #endif
 	 };
-int Npaths = (sizeof(paths)/sizeof(paths[0]));
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -53,6 +64,13 @@ static FrnctImg depthimg;
 static FrnctImg extraimg;
 static FrnctImg edgeimg;
 static FrnctImg bwimg;
+#ifdef USE_JPEG
+static FrnctImg rgbjpg;
+static FrnctImg depthjpg;
+static FrnctImg extrajpg;
+static FrnctImg edgejpg;
+static FrnctImg bwjpg;
+#endif
 static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
@@ -94,7 +112,13 @@ newfidaux(int path) {
 	FidAux *ret;
 
 	ret = calloc (1, sizeof(FidAux));
-	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge || path == Qbw) {
+	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge
+	  || path == Qbw
+#ifdef USE_JPEG
+	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
+	  || path == Qedgejpg || path == Qbwjpg
+#endif
+	) {
 		ret->fim = calloc(1, sizeof(FrnctImg));
 		// shouldn't need more than this
 		ret->fim->image = calloc(1, KWIDTH*2*KHEIGHT*2*4);
@@ -146,11 +170,45 @@ dostat(int path, IxpStat *stat) {
 	stat->qid.version = 0;
 	stat->qid.path = path;
 	stat->mode = P9_DMREAD;
+	stat->length = 0;
 	switch (stat->qid.path) {
 	case Qroot:
 		stat->mode |= P9_DMDIR|P9_DMEXEC;
 		break;
+	case Qrgb:
+		stat->length = rgbimg.length;
+		stat->mode |= P9_DMWRITE;
+		break;
 	case Qdepth:
+		stat->length = depthimg.length;
+		stat->mode |= P9_DMWRITE;
+		break;
+	case Qextra:
+		stat->length = extraimg.length;
+		break;
+	case Qedge:
+		stat->length = edgeimg.length;
+		break;
+	case Qbw:
+		stat->length = bwimg.length;
+		break;
+#ifdef USE_JPEG
+	case Qrgbjpg:
+		stat->length = rgbjpg.length;
+		break;
+	case Qdepthjpg:
+		stat->length = depthjpg.length;
+		break;
+	case Qextrajpg:
+		stat->length = extrajpg.length;
+		break;
+	case Qedgejpg:
+		stat->length = edgejpg.length;
+		break;
+	case Qbwjpg:
+		stat->length = bwjpg.length;
+		break;
+#endif
 	case Qtilt:
 	case Qled:
 		stat->mode |= P9_DMWRITE;
@@ -159,7 +217,6 @@ dostat(int path, IxpStat *stat) {
 	}
 	stat->atime = atimes[path];
 	stat->mtime = mtimes[path];
-	stat->length = 0;
 	stat->name = paths[path];
 	stat->uid = stat->gid = stat->muid = none;
 
@@ -244,6 +301,17 @@ compressjpg(FrnctImg *img)
 }
 #endif
 
+static void
+copyimg(FrnctImg *in, FrnctImg *out) {
+	memcpy(out->image, in->image, in->length);
+	out->length = in->length;
+	out->width = in->width;
+	out->height = in->height;
+	out->hdrlen = in->hdrlen;
+	out->components = in->components;
+	out->colorspace = in->colorspace;
+}
+
 static void fs_open(Ixp9Req *r)
 {
 	FidAux *f;
@@ -256,7 +324,7 @@ static void fs_open(Ixp9Req *r)
 	int path = r->fid->qid.path;
 
 	if (path < 0 || path >= Npaths) {
-		respond(r, "file not found");
+		ixp_respond(r, "file not found");
 		return;
 	}
 
@@ -265,65 +333,63 @@ static void fs_open(Ixp9Req *r)
 	r->fid->aux = newfidaux(path);
 	f = r->fid->aux;
 
-	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge || path == Qbw) {
+	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge || path == Qbw
+#ifdef USE_JPEG
+	|| path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg || path == Qedgejpg || path == Qbwjpg
+#endif
+	) {
 //		r->ofcall.ropen.iounit = 680*480*4;
 		if (istime(&rgbdlast, 1.0/30.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
 			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
-				respond(r, "freenect_sync_get_video");
+				ixp_respond(r, "freenect_sync_get_video");
 				return;
 			}
 			if (freenect_sync_get_depth((void**)(&depthbuf), &ts, 0, depthmode) != 0) {
-				respond(r, "freenect_sync_get_depth");
+				ixp_respond(r, "freenect_sync_get_depth");
 				return;
 			}
 			rgbdlock = 1;
 
 			rgbimg.width = KWIDTH;
 			rgbimg.height = KHEIGHT;
-			rgbimg.components = 3;
-			rgbimg.colorspace = JCS_RGB;
 			rgbimg.hdrlen = 15;
+			rgbimg.components = 3;
 			rgbimg.length = rgbimg.width*rgbimg.height*rgbimg.components+rgbimg.hdrlen;
 			memcpy(rgbimg.image, "P6\n640 480\n255\n", rgbimg.hdrlen);
 
 			depthimg.width = KWIDTH;
 			depthimg.height = KHEIGHT;
-			depthimg.components = 1;
-			depthimg.colorspace = JCS_GRAYSCALE;
 			depthimg.hdrlen = 15;
+			depthimg.components = 1;
 			depthimg.length = depthimg.width*depthimg.height*depthimg.components+depthimg.hdrlen;
 			memcpy(depthimg.image, "P5\n640 480\n255\n", depthimg.hdrlen);
 
 			extraimg.width = KWIDTH*2;
 			extraimg.height = KHEIGHT*2;
-			extraimg.components = 1;
-			extraimg.colorspace = JCS_GRAYSCALE;
 			extraimg.hdrlen = 17;
+			extraimg.components = 1;
 			extraimg.length = extraimg.width*extraimg.height*extraimg.components+extraimg.hdrlen;
 			memcpy(extraimg.image, "P5\n1280 1024\n255\n", extraimg.hdrlen);
 
 			edgeimg.width = KWIDTH;
 			edgeimg.height = KHEIGHT;
-			edgeimg.components = 1;
-			edgeimg.colorspace = JCS_GRAYSCALE;
 			edgeimg.hdrlen = 15;
+			edgeimg.components = 1;
 			edgeimg.length = edgeimg.width*edgeimg.height*edgeimg.components+edgeimg.hdrlen;
 			memcpy(edgeimg.image, "P5\n640 480\n255\n", edgeimg.hdrlen);
 
 			bwimg.width = KWIDTH;
 			bwimg.height = KHEIGHT;
-			bwimg.components = 1;
-			bwimg.colorspace = JCS_GRAYSCALE;
 			bwimg.hdrlen = 15;
+			bwimg.components = 1;
 			bwimg.length = bwimg.width*bwimg.height*bwimg.components+bwimg.hdrlen;
-			memcpy(rgbimg.image, "P5\n640 480\n255\n", bwimg.hdrlen);
+			memcpy(bwimg.image, "P5\n640 480\n255\n", bwimg.hdrlen);
 
 			memcpy(rgbimg.image+rgbimg.hdrlen, rgbbuf, rgbimg.length-rgbimg.hdrlen);
 			memset(edgeimg.image+edgeimg.hdrlen, 0, edgeimg.length-edgeimg.hdrlen);
-			// TODO remove later
-			memset(extraimg.image+extraimg.hdrlen+2, 0, extraimg.length-extraimg.hdrlen-2);
+			memset(extraimg.image+extraimg.hdrlen, 0, extraimg.length-extraimg.hdrlen);
 			// need black and white first for edges
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
@@ -349,47 +415,73 @@ static void fs_open(Ixp9Req *r)
 				extraimg.image[(y+KHEIGHT) * (KWIDTH*2) + x + extraimg.hdrlen] = depthimg.image[l] = k >> 3;
 			}
 #ifdef USE_JPEG
-			compressjpg(&rgbimg);
-			compressjpg(&depthimg);
-			compressjpg(&extraimg);
-			compressjpg(&edgeimg);
-			compressjpg(&bwimg);
+			copyimg(&rgbimg, &rgbjpg);
+			rgbjpg.colorspace = JCS_RGB;
+			compressjpg(&rgbjpg);
+
+			copyimg(&depthimg, &depthjpg);
+			depthjpg.colorspace = JCS_GRAYSCALE;
+			compressjpg(&depthjpg);
+
+			copyimg(&extraimg, &extrajpg);
+			extrajpg.colorspace = JCS_GRAYSCALE;
+			compressjpg(&extrajpg);
+
+			copyimg(&edgeimg, &edgejpg);
+			edgejpg.colorspace = JCS_GRAYSCALE;
+			compressjpg(&edgejpg);
+
+			copyimg(&bwimg, &bwjpg);
+			bwjpg.colorspace = JCS_GRAYSCALE;
+			compressjpg(&bwjpg);
 #endif
 			rgbdlock = 0;
 		}
 
 RGBDLOCK:
-		while(rgbdlock != 0) usleep(1000);
+		while(rgbdlock != 0) sleep(1);
 		switch(path){
 		case Qrgb:
-			memcpy(f->fim->image, rgbimg.image, rgbimg.length);
-			f->fim->length = rgbimg.length;
+			copyimg(&rgbimg, f->fim);
 			break;
 		case Qdepth:
-			memcpy(f->fim->image, depthimg.image, depthimg.length);
-			f->fim->length = depthimg.length;
+			copyimg(&depthimg, f->fim);
 			break;
 		case Qextra:
-			memcpy(f->fim->image, extraimg.image, extraimg.length);
-			f->fim->length = extraimg.length;
+			copyimg(&extraimg, f->fim);
 			break;
 		case Qedge:
-			memcpy(f->fim->image, edgeimg.image, edgeimg.length);
-			f->fim->length = edgeimg.length;
+			copyimg(&edgeimg, f->fim);
 			break;
 		case Qbw:
-			memcpy(f->fim->image, bwimg.image, bwimg.length);
-			f->fim->length = bwimg.length;
+			copyimg(&bwimg, f->fim);
 			break;
+#ifdef USE_JPEG
+		case Qrgbjpg:
+			copyimg(&rgbjpg, f->fim);
+			break;
+		case Qdepthjpg:
+			copyimg(&depthjpg, f->fim);
+			break;
+		case Qextrajpg:
+			copyimg(&extrajpg, f->fim);
+			break;
+		case Qedgejpg:
+			copyimg(&edgejpg, f->fim);
+			break;
+		case Qbwjpg:
+			copyimg(&bwjpg, f->fim);
+			break;
+#endif
 		default:
-			respond(r, "file not found");
+			ixp_respond(r, "file not found");
 			return;
 		}
 		if(rgbdlock != 0)
 			goto RGBDLOCK;
 	}
 
-	respond (r, NULL);
+	ixp_respond (r, NULL);
 }
 
 static void fs_walk(Ixp9Req *r)
@@ -400,17 +492,17 @@ static void fs_walk(Ixp9Req *r)
 	path = r->fid->qid.path;
 
 	if (path < 0 || path >= Npaths) {
-		respond(r, "file not found");
+		ixp_respond(r, "file not found");
 		return;
 	}
 
 	debug ("fs_walk from %s fid:%lu newfid:%lu\n", paths[path], r->fid->fid, r->newfid->fid);
 
 	if (r->ifcall.twalk.nwname == 0 || strcmp(r->ifcall.twalk.wname[0], ".") == 0) {
-		respond (r, NULL);
+		ixp_respond (r, NULL);
 		return;
 	} else if (r->ifcall.twalk.nwname != 1) {
-		respond (r, "file not found");
+		ixp_respond (r, "file not found");
 		return;
 	} else if (strcmp(r->ifcall.twalk.wname[0], "..") == 0) {
 		path = 0;
@@ -419,7 +511,7 @@ static void fs_walk(Ixp9Req *r)
 	}
 
 	if (path < 0 || path > Npaths) {
-		respond (r, "file not found");
+		ixp_respond (r, "file not found");
 		return;
 	}
 
@@ -433,7 +525,7 @@ static void fs_walk(Ixp9Req *r)
 	r->ofcall.rwalk.nwqid = 1;
 //	r->newfid->aux = newfidaux(path);
 
-	respond(r, NULL);
+	ixp_respond(r, NULL);
 }
 
 static void fs_read(Ixp9Req *r)
@@ -452,7 +544,7 @@ static void fs_read(Ixp9Req *r)
 	path = r->fid->qid.path;
 
 	if (path < 0 || path >= Npaths) {
-		respond(r, "file not found");
+		ixp_respond(r, "file not found");
 		return;
 	}
 
@@ -464,7 +556,7 @@ static void fs_read(Ixp9Req *r)
 		f->index++;
 		// END OF FILES
 		if (f->index >= Npaths) {
-			respond(r, NULL);
+			ixp_respond(r, NULL);
 			return;
 		}
 
@@ -474,7 +566,7 @@ static void fs_read(Ixp9Req *r)
 		n = dostat(f->index, &stat);
 		if (n < 0) {
 			free (buf);
-			respond (r, "fs_read dostat failed");
+			ixp_respond (r, "fs_read dostat failed");
 			return;
 		}
 		ixp_pstat(&m, &stat);
@@ -482,16 +574,23 @@ static void fs_read(Ixp9Req *r)
 		r->ofcall.rread.count = n;
 		r->ofcall.rread.data = m.data;
 
-		respond (r, NULL);
+		ixp_respond (r, NULL);
 		return;
 	case Qrgb:
 	case Qdepth:
 	case Qextra:
 	case Qedge:
 	case Qbw:
+#ifdef USE_JPEG
+	case Qrgbjpg:
+	case Qdepthjpg:
+	case Qextrajpg:
+	case Qedgejpg:
+	case Qbwjpg:
+#endif
 		size = r->ifcall.tread.count;
 		if (size < 0) {
-			respond(r, "no.");
+			ixp_respond(r, "no.");
 			return;
 		}		
 
@@ -504,11 +603,11 @@ static void fs_read(Ixp9Req *r)
 			r->ofcall.rread.count = size;
 
 		if (r->ofcall.rread.count != 0) {
-			r->ofcall.rread.data = calloc(1, f->fim->length+16);
+			r->ofcall.rread.data = malloc(r->ofcall.rread.count);
 			memcpy (r->ofcall.rread.data, &f->fim->image[r->ifcall.tread.offset], r->ofcall.rread.count);
 		}
 
-		respond (r, NULL);
+		ixp_respond (r, NULL);
 		return;
 #ifdef USE_AUDIO
 	case Qmic0:
@@ -538,16 +637,16 @@ static void fs_read(Ixp9Req *r)
 		r->ofcall.rread.data = buf;
 		r->ofcall.rread.count = n;
 
-		respond(r, NULL);
+		ixp_respond(r, NULL);
 		return;
 #endif
 	case Qtilt:
 		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 
-			if ((tiltstate == NULL || istime(&tiltlast, 1.0/30.0)) &&
+			if ((tiltstate==NULL || istime(&tiltlast,1.0/30.0)) &&
 			    freenect_sync_get_tilt_state(&tiltstate, 0) != 0) {
-				respond(r, "freenect_sync_get_tilt_state");
+				ixp_respond(r, "freenect_sync_get_tilt_state");
 				return;
 			} else {
 				freenect_get_mks_accel (tiltstate, &dx, &dy, &dz);
@@ -561,7 +660,7 @@ static void fs_read(Ixp9Req *r)
 		} else {
 			r->ofcall.rread.count = 0;
 		}
-		respond(r, NULL);
+		ixp_respond(r, NULL);
 		return;
 	case Qled:
 		if (r->ifcall.tread.offset == 0) {
@@ -576,11 +675,11 @@ static void fs_read(Ixp9Req *r)
 		} else {
 			r->ofcall.rread.count = 0;
 		}
-		respond(r, NULL);
+		ixp_respond(r, NULL);
 		return;
 	}
 
-	respond (r, "invalid path");
+	ixp_respond (r, "invalid path");
 }
 
 static void fs_stat(Ixp9Req *r)
@@ -594,7 +693,7 @@ static void fs_stat(Ixp9Req *r)
 	debug ("fs_stat fid:%lu\n", r->fid->fid);
 
 	if (path < 0 || path >= Npaths) {
-		respond(r, "file not found");
+		ixp_respond(r, "file not found");
 		return;
 	}
 
@@ -606,7 +705,7 @@ static void fs_stat(Ixp9Req *r)
 	r->ofcall.rstat.nstat = size;
 	r->ofcall.rstat.stat = m.data;
 	r->fid->qid = stat.qid;
-	respond(r, NULL);
+	ixp_respond(r, NULL);
 }
 
 static void fs_write(Ixp9Req *r)
@@ -618,13 +717,12 @@ static void fs_write(Ixp9Req *r)
 	debug ("fs_write\n");
 
 	if (path < 0 || path >= Npaths) {
-		respond (r, "file not found");
+		ixp_respond (r, "file not found");
 		return;
 	}
 
 	if (r->ifcall.twrite.count == 0) {
-		mtimes[path] = time(NULL);
-		respond (r, NULL);
+		ixp_respond (r, NULL);
 		return;
 	}
 
@@ -634,7 +732,7 @@ static void fs_write(Ixp9Req *r)
 
 	switch (path) {
 	default:
-		respond(r, "permission denied");
+		ixp_respond(r, "permission denied");
 		break;
 	case Qrgb:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
@@ -644,7 +742,7 @@ static void fs_write(Ixp9Req *r)
 			rgbmode = 0;
 
 		mtimes[path] = time(NULL);
-		respond(r, NULL);
+		ixp_respond(r, NULL);
 		break;
 	case Qdepth:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
@@ -654,7 +752,7 @@ static void fs_write(Ixp9Req *r)
 			depthmode = 0;
 
 		mtimes[path] = time(NULL);
-		respond(r, NULL);
+		ixp_respond(r, NULL);
 		break;
 	case Qtilt:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
@@ -663,9 +761,9 @@ static void fs_write(Ixp9Req *r)
 		mtimes[path] = time(NULL);
 
 		if (freenect_sync_set_tilt_degs (tilt, 0))
-			respond(r, "kinect disconnected");
+			ixp_respond(r, "kinect disconnected");
 		else {
-			respond(r, NULL);
+			ixp_respond(r, NULL);
 		}
 		break;
 	case Qled:
@@ -678,9 +776,9 @@ static void fs_write(Ixp9Req *r)
 		mtimes[path] = time(NULL);
 
 		if (freenect_sync_set_led (led, 0))
-			respond(r, "kinect disconnected");
+			ixp_respond(r, "kinect disconnected");
 		else {
-			respond(r, NULL);
+			ixp_respond(r, NULL);
 		}
 		break;
 	}
@@ -692,14 +790,14 @@ static void fs_clunk(Ixp9Req *r)
 {
 	debug ("fs_clunk fid:%lu\n", r->fid->fid);
 
-	respond (r, NULL);
+	ixp_respond (r, NULL);
 }
 
 static void fs_flush(Ixp9Req *r)
 {
 	debug ("fs_flush fid:%lu\n", r->fid->fid);
 
-	respond(r, NULL);
+	ixp_respond(r, NULL);
 }
 
 static void fs_attach(Ixp9Req *r)
@@ -712,21 +810,21 @@ static void fs_attach(Ixp9Req *r)
 
 	debug ("fs_attach fid:%lu\n", r->fid->fid);
 
-	respond (r, NULL);
+	ixp_respond (r, NULL);
 }
 
 static void fs_create(Ixp9Req *r)
 {
 	debug ("fs_create\n");
 
-	respond (r, "permission denied");
+	ixp_respond (r, "permission denied");
 }
 
 static void fs_remove(Ixp9Req *r)
 {
 	debug ("fs_remove\n");
 
-	respond (r, "permission denied");
+	ixp_respond (r, "permission denied");
 }
 
 static void fs_freefid(IxpFid *f)
@@ -754,7 +852,7 @@ static void fs_wstat(Ixp9Req *r)
 {
 	debug ("fs_wstat\n");
 
-	respond (r, NULL);
+	ixp_respond (r, NULL);
 }
 
 static IxpServer server;
@@ -871,6 +969,13 @@ main(int argc, char *argv[]) {
 	extraimg.image = calloc(1, extraimg.length);
 	edgeimg.image = calloc(1, edgeimg.length);
 	bwimg.image = calloc(1, bwimg.length);
+#ifdef USE_JPEG
+	rgbjpg.image = calloc(1, rgbimg.length);
+	depthjpg.image = calloc(1, depthimg.length);
+	extrajpg.image = calloc(1, extraimg.length);
+	edgejpg.image = calloc(1, edgeimg.length);
+	bwjpg.image = calloc(1, bwimg.length);
+#endif
 
 	fd = ixp_announce (argv[1]);
 	if (fd < 0) {
@@ -880,7 +985,11 @@ main(int argc, char *argv[]) {
 
 //	ixp_settimer(&server, 1, freenect_do_one, f_ctx);
 
-	acceptor = ixp_listen(&server, fd, &p9srv, serve_9pcon, NULL);
+	for (i = 0; i < Npaths; i++) {
+		mtimes[i] = time(NULL);
+	}
+
+	acceptor = ixp_listen(&server, fd, &p9srv, ixp_serve9conn, NULL);
 
 	ixp_serverloop(&server);
 	fprintf (stderr, "%s\n", ixp_errbuf());

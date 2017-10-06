@@ -6,7 +6,7 @@ clean:
 	rm -f kinectfs depthtorgb rgbtohsv xrgb gtkrgbanim *.o *~
 
 kinectfs: kinectfs.c
-	gcc -g -o kinectfs kinectfs.c -I/usr/local/include/libfreenect/ -I/usr/local/include/libixp/ -lixp -lfreenect -lfreenect_sync -lm -DUSE_JPEG -ljpeg
+	gcc -g -o kinectfs kinectfs.c -lixp -lfreenect -lfreenect_sync -lm -DUSE_JPEG -ljpeg --std=c99
 #	@echo SUDO: for port 564
 #	sudo setcap 'cap_net_bind_service=+ep' kinectfs
 
