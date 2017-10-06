@@ -18,11 +18,11 @@ enum {
 	Qroot = 0,
 	Qtilt,
 	Qled,
-	Qrgb,
-	Qdepth,
-	Qextra,
-	Qedge,
-	Qbw,
+	Qrgbpnm,
+	Qdepthpnm,
+	Qextrapnm,
+	Qedgepnm,
+	Qbwpnm,
 #ifdef USE_JPEG
 	Qrgbjpg,
 	Qdepthjpg,
@@ -112,8 +112,8 @@ newfidaux(int path) {
 	FidAux *ret;
 
 	ret = calloc (1, sizeof(FidAux));
-	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge
-	  || path == Qbw
+	if (path == Qrgbpnm || path == Qdepthpnm || path == Qextrapnm
+	  || path == Qedgepnm || path == Qbwpnm
 #ifdef USE_JPEG
 	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
 	  || path == Qedgejpg || path == Qbwjpg
@@ -175,21 +175,21 @@ dostat(int path, IxpStat *stat) {
 	case Qroot:
 		stat->mode |= P9_DMDIR|P9_DMEXEC;
 		break;
-	case Qrgb:
+	case Qrgbpnm:
 		stat->length = rgbimg.length;
 		stat->mode |= P9_DMWRITE;
 		break;
-	case Qdepth:
+	case Qdepthpnm:
 		stat->length = depthimg.length;
 		stat->mode |= P9_DMWRITE;
 		break;
-	case Qextra:
+	case Qextrapnm:
 		stat->length = extraimg.length;
 		break;
-	case Qedge:
+	case Qedgepnm:
 		stat->length = edgeimg.length;
 		break;
-	case Qbw:
+	case Qbwpnm:
 		stat->length = bwimg.length;
 		break;
 #ifdef USE_JPEG
@@ -333,9 +333,11 @@ static void fs_open(Ixp9Req *r)
 	r->fid->aux = newfidaux(path);
 	f = r->fid->aux;
 
-	if (path == Qrgb || path == Qdepth || path == Qextra || path == Qedge || path == Qbw
+	if (path == Qrgbpnm || path == Qdepthpnm || path == Qextrapnm
+	  || path == Qedgepnm || path == Qbwpnm
 #ifdef USE_JPEG
-	|| path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg || path == Qedgejpg || path == Qbwjpg
+	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
+	  || path == Qedgejpg || path == Qbwjpg
 #endif
 	) {
 //		r->ofcall.ropen.iounit = 680*480*4;
@@ -441,19 +443,19 @@ static void fs_open(Ixp9Req *r)
 RGBDLOCK:
 		while(rgbdlock != 0) sleep(1);
 		switch(path){
-		case Qrgb:
+		case Qrgbpnm:
 			copyimg(&rgbimg, f->fim);
 			break;
-		case Qdepth:
+		case Qdepthpnm:
 			copyimg(&depthimg, f->fim);
 			break;
-		case Qextra:
+		case Qextrapnm:
 			copyimg(&extraimg, f->fim);
 			break;
-		case Qedge:
+		case Qedgepnm:
 			copyimg(&edgeimg, f->fim);
 			break;
-		case Qbw:
+		case Qbwpnm:
 			copyimg(&bwimg, f->fim);
 			break;
 #ifdef USE_JPEG
@@ -576,11 +578,11 @@ static void fs_read(Ixp9Req *r)
 
 		ixp_respond (r, NULL);
 		return;
-	case Qrgb:
-	case Qdepth:
-	case Qextra:
-	case Qedge:
-	case Qbw:
+	case Qrgbpnm:
+	case Qdepthpnm:
+	case Qextrapnm:
+	case Qedgepnm:
+	case Qbwpnm:
 #ifdef USE_JPEG
 	case Qrgbjpg:
 	case Qdepthjpg:
@@ -734,7 +736,7 @@ static void fs_write(Ixp9Req *r)
 	default:
 		ixp_respond(r, "permission denied");
 		break;
-	case Qrgb:
+	case Qrgbpnm:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
 		rgbmode = atoi(buf);
 
@@ -744,7 +746,7 @@ static void fs_write(Ixp9Req *r)
 		mtimes[path] = time(NULL);
 		ixp_respond(r, NULL);
 		break;
-	case Qdepth:
+	case Qdepthpnm:
 		r->ofcall.rwrite.count = r->ifcall.twrite.count;
 		depthmode = atoi(buf);
 
