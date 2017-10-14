@@ -91,7 +91,7 @@ static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
-#define KWIDTH 640 
+#define KWIDTH 640
 #define KHEIGHT 480
 
 typedef struct _FidAux {
@@ -151,7 +151,7 @@ char
 istime(struct timeval *last, double epsilon) {
 	struct timeval now;
 	double delta;
- 
+
 	gettimeofday(&now, NULL);
 	delta = (now.tv_sec + now.tv_usec / 1000000.0) - (last->tv_sec + last->tv_usec / 1000000.0);
 
@@ -178,7 +178,7 @@ size_t audiohead[4] = { 0, 0, 0, 0 };
 #endif
 
 //#define debug(...) fprintf (stderr, __VA_ARGS__);
-#define debug(...) {}; 
+#define debug(...) {};
 
 int
 dostat(int path, IxpStat *stat) {
@@ -287,7 +287,7 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 		length = num_samples * sizeof (int32_t);
 		audiolengths[i] += length;
-		audiohead[i] += length;	
+		audiohead[i] += length;
 
 		if (audiolengths[i] > AUDIO_BUFFER_SIZE)
 			audiolengths[i] = AUDIO_BUFFER_SIZE;
@@ -339,6 +339,7 @@ compressjpg(FrnctImg *img)
 #endif
 
 #ifdef USE_PLAN9
+/** Copywritten Plan 9 stuff */
 
 #define CHUNK   8000
 #define NMEM	1024
@@ -359,19 +360,34 @@ struct Hlist{
 void
 compressplan9(FrnctImg *img)
 {
-	char *data, *edata, *line;
-	int len, n, y;
-	Hlist *hash, *chain, *hp, *cp;
-	int h;
-	int bpl;
-	int ncblock;
-	char *outbuf, *eout, *outp;
+	unsigned char *outbuf, *outp, *eout;	    /* encoded data, pointer, end */
+	unsigned char *loutp;			   /* start of encoded line */
+	Hlist *hash;			    /* heads of hash chains of past strings */
+	Hlist *chain, *hp;		      /* hash chain members, pointer */
+	Hlist *cp;			      /* next Hlist to fall out of window */
+	int h;				  /* hash value */
+	unsigned char *line, *eline;		    /* input line, end pointer */
+	unsigned char *data, *edata;		    /* input buffer, end pointer */
+	unsigned long n;				/* length of input buffer */
+	unsigned long nb;			       /* # of bytes returned by unloadimage */
+	int bpl;				/* input line length */
+	int offs, runlen;		       /* offset, length of consumed data */
+	unsigned char dumpbuf[NDUMP];		   /* dump accumulator */
+	int ndump;			      /* length of dump accumulator */
+	int miny, dy;			   /* y values while unloading input */
+	int chunk, ncblock;
+	unsigned char *p, *q, *s, *es, *t;
+	unsigned char *buffer;
+	int y, len;
+
+	buffer = malloc(KWIDTH*2*KHEIGHT*2*4);
 
 	bpl = img->width * img->components;
 	ncblock = bpl;
 	if (ncblock < NCBLOCK)
 		ncblock = NCBLOCK;
 	n = img->height * bpl;
+	data = malloc(n);
 	hash = malloc(NHASH*sizeof(Hlist));
 	chain = malloc(NMEM*sizeof(Hlist));
 	outbuf = malloc(ncblock);
@@ -380,24 +396,121 @@ compressplan9(FrnctImg *img)
 	line = data;
 	y = 0;
 
-	data = malloc(img->length);
-	sprintf(data, "compressed\n%11s %11d %11d %11d %11d ", img->components == 1? "m8": "r8g8b8", 0, 0, img->width, img->height);
+	sprintf(buffer, "compressed\n%11s %11d %11d %11d %11d ", img->components == 1? "m8": "r8g8b8", 0, 0, img->width, img->height);
 	len = 11+5*12;
 
 	while (line != edata) {
 		memset(hash, 0, NHASH*sizeof(Hlist));
-		memset(chain, 0, NMEM*sizeof(Hlist));                           
+		memset(chain, 0, NMEM*sizeof(Hlist));
 		cp = chain;
 		h = 0;
 		outp = outbuf;
+		for(n = 0; n != NMATCH; n++)
+			h = hupdate(h, line[n]);
+		loutp = outbuf;
+		while(line != edata){
+			ndump = 0;
+			eline = line + bpl;
+			for(p = line; p != eline; p++){
+				if(eline-p < NRUN)
+					es = eline;
+				else
+					es = p+NRUN;
+				q = 0;
+				runlen = 0;
+				for(hp = hash[h].next; hp; hp = hp->next){
+					s = p + runlen;
+					if(s >= es)
+						continue;
+					t = hp->s + runlen;
+					for(; s >= p; s--)
+						if(*s != *t--)
+							goto matchloop;
+					t += runlen+2;
+					s += runlen+2;
+					for(; s < es; s++)
+						if(*s != *t++)
+							break;
+					n = s-p;
+					if(n > runlen){
+						runlen = n;
+						q = hp->s;
+						if(n == NRUN)
+							break;
+					}
+matchloop:				;
+				}
+				if(runlen < NMATCH){
+					if(ndump == NDUMP){
+						if(eout-outp < ndump+1)
+							goto Bfull;
+						*outp++ = ndump-1+128;
+						memmove(outp, dumpbuf, ndump);
+						outp += ndump;
+						ndump = 0;
+					}
+					dumpbuf[ndump++] = *p;
+					runlen = 1;
+				}
+				else{
+					if(ndump != 0){
+						if(eout-outp < ndump+1)
+							goto Bfull;
+						*outp++ = ndump-1+128;
+						memmove(outp, dumpbuf, ndump);
+						outp += ndump;
+						ndump = 0;
+					}
+					offs = p-q-1;
+					if(eout-outp < 2)
+						goto Bfull;
+					*outp++ = ((runlen-NMATCH)<<2) + (offs>>8);
+					*outp++ = offs&255;
+				}
+				for(q = p+runlen; p != q; p++){
+					if(cp->prev)
+						cp->prev->next = 0;
+					cp->next = hash[h].next;
+					cp->prev = &hash[h];
+					if(cp->next)
+						cp->next->prev = cp;
+					cp->prev->next = cp;
+					cp->s = p;
+					if(++cp == &chain[NMEM])
+						cp = chain;
+					if(edata-p > NMATCH)
+						h = hupdate(h, p[NMATCH]);
+				}
+			}
+			if(ndump != 0){
+				if(eout-outp < ndump+1)
+					goto Bfull;
+				*outp++ = ndump-1+128;
+				memmove(outp, dumpbuf, ndump);
+				outp += ndump;
+			}
+			line = eline;
+			loutp = outp;
+			y++;
+		}
+	Bfull:
+		if(loutp == outbuf)
+			goto ErrOut;
+		n = loutp-outbuf;
+		sprintf(&buffer[len], "%11d %11ld ", y, n);
+		len += 12*2;
+		memcpy(&buffer[len], outbuf, n);
+		len += n;
+		y = 0;
 	}
 
 	img->length = len;
-	memcpy(img->image, data, img->length);
 
+ErrOut:
 	free(chain);
 	free(hash);
 	free(data);
+	free(outbuf);
 }
 #endif
 
@@ -513,7 +626,7 @@ static void fs_open(Ixp9Req *r)
 
 				s = depthbuf[j * 2];
 				s |= depthbuf[j * 2 + 1] << 8;
-	
+
 				if (s >= 2048)
 					s = 0;
 
@@ -733,7 +846,7 @@ static void fs_read(Ixp9Req *r)
 		if (size < 0) {
 			ixp_respond(r, "no.");
 			return;
-		}		
+		}
 
 		r->ofcall.rread.count = f->fim->length - r->ifcall.tread.offset;
 
@@ -767,7 +880,7 @@ static void fs_read(Ixp9Req *r)
 
 		if (size < n)
 			n = size;
-	
+
 		if ((audiolengths[i] >= sizeof(int32_t)) && (n == 0))
 			size = n = sizeof(int32_t);
 
