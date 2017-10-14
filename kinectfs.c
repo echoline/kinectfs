@@ -135,6 +135,10 @@ newfidaux(int path) {
 	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
 	  || path == Qedgejpg || path == Qbwjpg
 #endif
+#ifdef USE_PLAN9
+	  || path == Qrgb || path == Qdepth || path == Qextra || path == Qedge
+	  || path == Qbw
+#endif
 	) {
 		ret->fim = calloc(1, sizeof(FrnctImg));
 		// shouldn't need more than this
@@ -224,6 +228,23 @@ dostat(int path, IxpStat *stat) {
 		break;
 	case Qbwjpg:
 		stat->length = bwjpg.length;
+		break;
+#endif
+#ifdef USE_PLAN9
+	case Qrgb:
+		stat->length = rgbimg.length;
+		break;
+	case Qdepth:
+		stat->length = depthimg.length;
+		break;
+	case Qextra:
+		stat->length = extraimg.length;
+		break;
+	case Qedge:
+		stat->length = edgeimg.length;
+		break;
+	case Qbw:
+		stat->length = bwimg.length;
 		break;
 #endif
 	case Qtilt:
@@ -364,6 +385,10 @@ static void fs_open(Ixp9Req *r)
 	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
 	  || path == Qedgejpg || path == Qbwjpg
 #endif
+#ifdef USE_PLAN9
+	  || path == Qrgb || path == Qdepth || path == Qextra || path == Qedge
+	  || path == Qbw
+#endif
 	) {
 //		r->ofcall.ropen.iounit = 680*480*4;
 		if (istime(&rgbdlast, 1.0/30.0)) {
@@ -462,6 +487,22 @@ static void fs_open(Ixp9Req *r)
 			bwjpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&bwjpg);
 #endif
+#ifdef USE_PLAN9
+			copyimg(&rgbpnm, &rgbimg);
+			compressplan9(&rgbimg);
+
+			copyimg(&depthpnm, &depthimg);
+			compressplan9(&depthimg);
+
+			copyimg(&extrapnm, &extraimg);
+			compressplan9(&extraimg);
+
+			copyimg(&edgepnm, &edgeimg);
+			compressplan9(&edgeimg);
+
+			copyimg(&bwpnm, &bwimg);
+			compressplan9(&bwimg);
+#endif
 			rgbdlock = 0;
 		}
 
@@ -498,6 +539,23 @@ RGBDLOCK:
 			break;
 		case Qbwjpg:
 			copyimg(&bwjpg, f->fim);
+			break;
+#endif
+#ifdef USE_PLAN9
+		case Qrgb:
+			copyimg(&rgbimg, f->fim);
+			break;
+		case Qdepth:
+			copyimg(&depthimg, f->fim);
+			break;
+		case Qextra:
+			copyimg(&extraimg, f->fim);
+			break;
+		case Qedge:
+			copyimg(&edgeimg, f->fim);
+			break;
+		case Qbw:
+			copyimg(&bwimg, f->fim);
 			break;
 #endif
 		default:
@@ -614,6 +672,13 @@ static void fs_read(Ixp9Req *r)
 	case Qextrajpg:
 	case Qedgejpg:
 	case Qbwjpg:
+#endif
+#ifdef USE_PLAN9
+	case Qrgb:
+	case Qdepth:
+	case Qextra:
+	case Qedge:
+	case Qbw:
 #endif
 		size = r->ifcall.tread.count;
 		if (size < 0) {
@@ -1002,6 +1067,13 @@ main(int argc, char *argv[]) {
 	extrajpg.image = calloc(1, extrapnm.length);
 	edgejpg.image = calloc(1, edgepnm.length);
 	bwjpg.image = calloc(1, bwpnm.length);
+#endif
+#ifdef USE_PLAN9
+	rgbimg.image = calloc(1, rgbpnm.length);
+	depthimg.image = calloc(1, depthpnm.length);
+	extraimg.image = calloc(1, extrapnm.length);
+	edgeimg.image = calloc(1, edgepnm.length);
+	bwimg.image = calloc(1, bwpnm.length);
 #endif
 
 	fd = ixp_announce (argv[1]);
