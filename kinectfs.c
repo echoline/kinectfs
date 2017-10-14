@@ -7,7 +7,7 @@
 #include <time.h>
 #include <math.h>
 #include <ixp.h>
-#include <libfreenect_sync.h>
+#include <libfreenect/libfreenect_sync.h>
 #ifdef USE_JPEG
 #include <jpeglib.h>
 #endif
@@ -30,6 +30,13 @@ enum {
 	Qedgejpg,
 	Qbwjpg,
 #endif
+#ifdef USE_PLAN9
+	Qrgb,
+	Qdepth,
+	Qextra,
+	Qedge,
+	Qbw,
+#endif
 #ifdef USE_AUDIO
 	Qmic0,
 	Qmic1,
@@ -42,6 +49,9 @@ char *paths[] = { "/", "tilt", "led", "rgb.pnm", "depth.pnm", "extra.pnm",
 	"edge.pnm", "bw.pnm",
 #ifdef USE_JPEG
 	"rgb.jpg", "depth.jpg", "extra.jpg", "edge.jpg", "bw.jpg",
+#endif
+#ifdef USE_PLAN9
+	"rgb", "depth", "extra", "edge", "bw",
 #endif
 #ifdef USE_AUDIO
 	"mic0", "mic1", "mic2", "mic3",
@@ -59,17 +69,24 @@ typedef struct {
 	unsigned int colorspace;
 	unsigned char hdrlen;
 } FrnctImg;
-static FrnctImg rgbimg;
-static FrnctImg depthimg;
-static FrnctImg extraimg;
-static FrnctImg edgeimg;
-static FrnctImg bwimg;
+static FrnctImg rgbpnm;
+static FrnctImg depthpnm;
+static FrnctImg extrapnm;
+static FrnctImg edgepnm;
+static FrnctImg bwpnm;
 #ifdef USE_JPEG
 static FrnctImg rgbjpg;
 static FrnctImg depthjpg;
 static FrnctImg extrajpg;
 static FrnctImg edgejpg;
 static FrnctImg bwjpg;
+#endif
+#ifdef USE_PLAN9
+static FrnctImg rgbimg;
+static FrnctImg depthimg;
+static FrnctImg extraimg;
+static FrnctImg edgeimg;
+static FrnctImg bwimg;
 #endif
 static struct timeval rgbdlast;
 static int rgbdlock = 0;
@@ -176,21 +193,21 @@ dostat(int path, IxpStat *stat) {
 		stat->mode |= P9_DMDIR|P9_DMEXEC;
 		break;
 	case Qrgbpnm:
-		stat->length = rgbimg.length;
+		stat->length = rgbpnm.length;
 		stat->mode |= P9_DMWRITE;
 		break;
 	case Qdepthpnm:
-		stat->length = depthimg.length;
+		stat->length = depthpnm.length;
 		stat->mode |= P9_DMWRITE;
 		break;
 	case Qextrapnm:
-		stat->length = extraimg.length;
+		stat->length = extrapnm.length;
 		break;
 	case Qedgepnm:
-		stat->length = edgeimg.length;
+		stat->length = edgepnm.length;
 		break;
 	case Qbwpnm:
-		stat->length = bwimg.length;
+		stat->length = bwpnm.length;
 		break;
 #ifdef USE_JPEG
 	case Qrgbjpg:
@@ -301,8 +318,16 @@ compressjpg(FrnctImg *img)
 }
 #endif
 
+#ifdef USE_PLAN9
+void
+compressplan9(FrnctImg *img)
+{
+}
+#endif
+
 static void
-copyimg(FrnctImg *in, FrnctImg *out) {
+copyimg(FrnctImg *in, FrnctImg *out)
+{
 	memcpy(out->image, in->image, in->length);
 	out->length = in->length;
 	out->width = in->width;
@@ -354,57 +379,57 @@ static void fs_open(Ixp9Req *r)
 			}
 			rgbdlock = 1;
 
-			rgbimg.width = KWIDTH;
-			rgbimg.height = KHEIGHT;
-			rgbimg.hdrlen = 15;
-			rgbimg.components = 3;
-			rgbimg.length = rgbimg.width*rgbimg.height*rgbimg.components+rgbimg.hdrlen;
-			memcpy(rgbimg.image, "P6\n640 480\n255\n", rgbimg.hdrlen);
+			rgbpnm.width = KWIDTH;
+			rgbpnm.height = KHEIGHT;
+			rgbpnm.hdrlen = 15;
+			rgbpnm.components = 3;
+			rgbpnm.length = rgbpnm.width*rgbpnm.height*rgbpnm.components+rgbpnm.hdrlen;
+			memcpy(rgbpnm.image, "P6\n640 480\n255\n", rgbpnm.hdrlen);
 
-			depthimg.width = KWIDTH;
-			depthimg.height = KHEIGHT;
-			depthimg.hdrlen = 15;
-			depthimg.components = 1;
-			depthimg.length = depthimg.width*depthimg.height*depthimg.components+depthimg.hdrlen;
-			memcpy(depthimg.image, "P5\n640 480\n255\n", depthimg.hdrlen);
+			depthpnm.width = KWIDTH;
+			depthpnm.height = KHEIGHT;
+			depthpnm.hdrlen = 15;
+			depthpnm.components = 1;
+			depthpnm.length = depthpnm.width*depthpnm.height*depthpnm.components+depthpnm.hdrlen;
+			memcpy(depthpnm.image, "P5\n640 480\n255\n", depthpnm.hdrlen);
 
-			extraimg.width = KWIDTH*2;
-			extraimg.height = KHEIGHT*2;
-			extraimg.hdrlen = 16;
-			extraimg.components = 1;
-			extraimg.length = extraimg.width*extraimg.height*extraimg.components+extraimg.hdrlen;
-			memcpy(extraimg.image, "P5\n1280 960\n255\n", extraimg.hdrlen);
+			extrapnm.width = KWIDTH*2;
+			extrapnm.height = KHEIGHT*2;
+			extrapnm.hdrlen = 16;
+			extrapnm.components = 1;
+			extrapnm.length = extrapnm.width*extrapnm.height*extrapnm.components+extrapnm.hdrlen;
+			memcpy(extrapnm.image, "P5\n1280 960\n255\n", extrapnm.hdrlen);
 
-			edgeimg.width = KWIDTH;
-			edgeimg.height = KHEIGHT;
-			edgeimg.hdrlen = 15;
-			edgeimg.components = 1;
-			edgeimg.length = edgeimg.width*edgeimg.height*edgeimg.components+edgeimg.hdrlen;
-			memcpy(edgeimg.image, "P5\n640 480\n255\n", edgeimg.hdrlen);
+			edgepnm.width = KWIDTH;
+			edgepnm.height = KHEIGHT;
+			edgepnm.hdrlen = 15;
+			edgepnm.components = 1;
+			edgepnm.length = edgepnm.width*edgepnm.height*edgepnm.components+edgepnm.hdrlen;
+			memcpy(edgepnm.image, "P5\n640 480\n255\n", edgepnm.hdrlen);
 
-			bwimg.width = KWIDTH;
-			bwimg.height = KHEIGHT;
-			bwimg.hdrlen = 15;
-			bwimg.components = 1;
-			bwimg.length = bwimg.width*bwimg.height*bwimg.components+bwimg.hdrlen;
-			memcpy(bwimg.image, "P5\n640 480\n255\n", bwimg.hdrlen);
+			bwpnm.width = KWIDTH;
+			bwpnm.height = KHEIGHT;
+			bwpnm.hdrlen = 15;
+			bwpnm.components = 1;
+			bwpnm.length = bwpnm.width*bwpnm.height*bwpnm.components+bwpnm.hdrlen;
+			memcpy(bwpnm.image, "P5\n640 480\n255\n", bwpnm.hdrlen);
 
-			memcpy(rgbimg.image+rgbimg.hdrlen, rgbbuf, rgbimg.length-rgbimg.hdrlen);
-			memset(edgeimg.image+edgeimg.hdrlen, 0, edgeimg.length-edgeimg.hdrlen);
-			memset(extraimg.image+extraimg.hdrlen, 0, extraimg.length-extraimg.hdrlen);
+			memcpy(rgbpnm.image+rgbpnm.hdrlen, rgbbuf, rgbpnm.length-rgbpnm.hdrlen);
+			memset(edgepnm.image+edgepnm.hdrlen, 0, edgepnm.length-edgepnm.hdrlen);
+			memset(extrapnm.image+extrapnm.hdrlen, 0, extrapnm.length-extrapnm.hdrlen);
 			// need black and white first for edges
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
 				c = r2blut[((*(uint32_t*)&rgbbuf[j * 3]) & 0xFFFFFF00) >> 8];
-				extraimg.image[y * (KWIDTH*2) + x + extraimg.hdrlen] = bwimg.image[j + bwimg.hdrlen] = (c & 0xFF);
+				extrapnm.image[y * (KWIDTH*2) + x + extrapnm.hdrlen] = bwpnm.image[j + bwpnm.hdrlen] = (c & 0xFF);
 			}
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
-				l = j + bwimg.hdrlen;
+				l = j + bwpnm.hdrlen;
 
 				if (x > 0 && x < (KWIDTH-1) && y > 0 && y < (KHEIGHT-1)) {
-					k = abs(bwimg.image[l - (KWIDTH+1)] * -1 + bwimg.image[l - (KWIDTH-1)] * 1 + bwimg.image[l - 1] * -2 + bwimg.image[l + 1] * 2 + bwimg.image[l + (KWIDTH-1)] * -1 + bwimg.image[l + (KWIDTH+1)] * 1 + bwimg.image[l - (KWIDTH+1)] * 1 + bwimg.image[l - KWIDTH] * 2 + bwimg.image[l - (KWIDTH-1)] * 1 + bwimg.image[l + (KWIDTH-1)] * -1 + bwimg.image[l + KWIDTH] * -2 + bwimg.image[l + (KWIDTH+1)] * -1);
-					extraimg.image[y * (KWIDTH*2) + x + KWIDTH + extraimg.hdrlen] = edgeimg.image[l] = k & 0xFF;
+					k = abs(bwpnm.image[l - (KWIDTH+1)] * -1 + bwpnm.image[l - (KWIDTH-1)] * 1 + bwpnm.image[l - 1] * -2 + bwpnm.image[l + 1] * 2 + bwpnm.image[l + (KWIDTH-1)] * -1 + bwpnm.image[l + (KWIDTH+1)] * 1 + bwpnm.image[l - (KWIDTH+1)] * 1 + bwpnm.image[l - KWIDTH] * 2 + bwpnm.image[l - (KWIDTH-1)] * 1 + bwpnm.image[l + (KWIDTH-1)] * -1 + bwpnm.image[l + KWIDTH] * -2 + bwpnm.image[l + (KWIDTH+1)] * -1);
+					extrapnm.image[y * (KWIDTH*2) + x + KWIDTH + extrapnm.hdrlen] = edgepnm.image[l] = k & 0xFF;
 				}
 
 				s = depthbuf[j * 2];
@@ -414,26 +439,26 @@ static void fs_open(Ixp9Req *r)
 					s = 0;
 
 				k = s & 0x7FF;
-				extraimg.image[(y+KHEIGHT) * (KWIDTH*2) + x + extraimg.hdrlen] = depthimg.image[l] = k >> 3;
+				extrapnm.image[(y+KHEIGHT) * (KWIDTH*2) + x + extrapnm.hdrlen] = depthpnm.image[l] = k >> 3;
 			}
 #ifdef USE_JPEG
-			copyimg(&rgbimg, &rgbjpg);
+			copyimg(&rgbpnm, &rgbjpg);
 			rgbjpg.colorspace = JCS_RGB;
 			compressjpg(&rgbjpg);
 
-			copyimg(&depthimg, &depthjpg);
+			copyimg(&depthpnm, &depthjpg);
 			depthjpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&depthjpg);
 
-			copyimg(&extraimg, &extrajpg);
+			copyimg(&extrapnm, &extrajpg);
 			extrajpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&extrajpg);
 
-			copyimg(&edgeimg, &edgejpg);
+			copyimg(&edgepnm, &edgejpg);
 			edgejpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&edgejpg);
 
-			copyimg(&bwimg, &bwjpg);
+			copyimg(&bwpnm, &bwjpg);
 			bwjpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&bwjpg);
 #endif
@@ -444,19 +469,19 @@ RGBDLOCK:
 		while(rgbdlock != 0) sleep(1);
 		switch(path){
 		case Qrgbpnm:
-			copyimg(&rgbimg, f->fim);
+			copyimg(&rgbpnm, f->fim);
 			break;
 		case Qdepthpnm:
-			copyimg(&depthimg, f->fim);
+			copyimg(&depthpnm, f->fim);
 			break;
 		case Qextrapnm:
-			copyimg(&extraimg, f->fim);
+			copyimg(&extrapnm, f->fim);
 			break;
 		case Qedgepnm:
-			copyimg(&edgeimg, f->fim);
+			copyimg(&edgepnm, f->fim);
 			break;
 		case Qbwpnm:
-			copyimg(&bwimg, f->fim);
+			copyimg(&bwpnm, f->fim);
 			break;
 #ifdef USE_JPEG
 		case Qrgbjpg:
@@ -961,22 +986,22 @@ main(int argc, char *argv[]) {
 #endif
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
-	rgbimg.length = 640*480*3+15;
-	depthimg.length = 640*480*1+15;
-	extraimg.length = 1280*960*1+16;
-	edgeimg.length = 640*480*1+15;
-	bwimg.length = 640*480*1+15;
-	rgbimg.image = calloc(1, rgbimg.length);
-	depthimg.image = calloc(1, depthimg.length);
-	extraimg.image = calloc(1, extraimg.length);
-	edgeimg.image = calloc(1, edgeimg.length);
-	bwimg.image = calloc(1, bwimg.length);
+	rgbpnm.length = 640*480*3+15;
+	depthpnm.length = 640*480*1+15;
+	extrapnm.length = 1280*960*1+16;
+	edgepnm.length = 640*480*1+15;
+	bwpnm.length = 640*480*1+15;
+	rgbpnm.image = calloc(1, rgbpnm.length);
+	depthpnm.image = calloc(1, depthpnm.length);
+	extrapnm.image = calloc(1, extrapnm.length);
+	edgepnm.image = calloc(1, edgepnm.length);
+	bwpnm.image = calloc(1, bwpnm.length);
 #ifdef USE_JPEG
-	rgbjpg.image = calloc(1, rgbimg.length);
-	depthjpg.image = calloc(1, depthimg.length);
-	extrajpg.image = calloc(1, extraimg.length);
-	edgejpg.image = calloc(1, edgeimg.length);
-	bwjpg.image = calloc(1, bwimg.length);
+	rgbjpg.image = calloc(1, rgbpnm.length);
+	depthjpg.image = calloc(1, depthpnm.length);
+	extrajpg.image = calloc(1, extrapnm.length);
+	edgejpg.image = calloc(1, edgepnm.length);
+	bwjpg.image = calloc(1, bwpnm.length);
 #endif
 
 	fd = ixp_announce (argv[1]);
