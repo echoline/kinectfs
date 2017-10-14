@@ -66,7 +66,6 @@ typedef struct {
 	unsigned int width;
 	unsigned int height;
 	unsigned int components;
-	unsigned int colorspace;
 	unsigned char hdrlen;
 } FrnctImg;
 static FrnctImg rgbpnm;
@@ -316,7 +315,7 @@ compressjpg(FrnctImg *img)
 	cinfo.image_width = img->width;
 	cinfo.image_height = img->height;
 	cinfo.input_components = img->components;
-	cinfo.in_color_space = img->colorspace;
+	cinfo.in_color_space = img->components == 3? JCS_RGB: JCS_GRAYSCALE;
 
 	jpeg_mem_dest( &cinfo, &buf, &buflen );
 	jpeg_set_defaults( &cinfo );
@@ -340,9 +339,65 @@ compressjpg(FrnctImg *img)
 #endif
 
 #ifdef USE_PLAN9
+
+#define CHUNK   8000
+#define NMEM	1024
+#define NMATCH	3
+#define NRUN	(NMATCH+31)
+#define NDUMP	128
+#define NCBLOCK	6000
+#define HSHIFT  5
+#define NHASH   (1<<(HSHIFT*NMATCH))
+#define HMASK   (NHASH-1)
+#define hupdate(h, c)   ((((h)<<HSHIFT)^(c))&HMASK)
+typedef struct Hlist Hlist;
+struct Hlist{
+	unsigned char *s;
+	Hlist *next, *prev;
+};
+
 void
 compressplan9(FrnctImg *img)
 {
+	char *data, *edata, *line;
+	int len, n, y;
+	Hlist *hash, *chain, *hp, *cp;
+	int h;
+	int bpl;
+	int ncblock;
+	char *outbuf, *eout, *outp;
+
+	bpl = img->width * img->components;
+	ncblock = bpl;
+	if (ncblock < NCBLOCK)
+		ncblock = NCBLOCK;
+	n = img->height * bpl;
+	hash = malloc(NHASH*sizeof(Hlist));
+	chain = malloc(NMEM*sizeof(Hlist));
+	outbuf = malloc(ncblock);
+	edata = data+n;
+	eout = outbuf+ncblock;
+	line = data;
+	y = 0;
+
+	data = malloc(img->length);
+	sprintf(data, "compressed\n%11s %11d %11d %11d %11d ", img->components == 1? "m8": "r8g8b8", 0, 0, img->width, img->height);
+	len = 11+5*12;
+
+	while (line != edata) {
+		memset(hash, 0, NHASH*sizeof(Hlist));
+		memset(chain, 0, NMEM*sizeof(Hlist));                           
+		cp = chain;
+		h = 0;
+		outp = outbuf;
+	}
+
+	img->length = len;
+	memcpy(img->image, data, img->length);
+
+	free(chain);
+	free(hash);
+	free(data);
 }
 #endif
 
@@ -355,7 +410,6 @@ copyimg(FrnctImg *in, FrnctImg *out)
 	out->height = in->height;
 	out->hdrlen = in->hdrlen;
 	out->components = in->components;
-	out->colorspace = in->colorspace;
 }
 
 static void fs_open(Ixp9Req *r)
@@ -468,23 +522,18 @@ static void fs_open(Ixp9Req *r)
 			}
 #ifdef USE_JPEG
 			copyimg(&rgbpnm, &rgbjpg);
-			rgbjpg.colorspace = JCS_RGB;
 			compressjpg(&rgbjpg);
 
 			copyimg(&depthpnm, &depthjpg);
-			depthjpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&depthjpg);
 
 			copyimg(&extrapnm, &extrajpg);
-			extrajpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&extrajpg);
 
 			copyimg(&edgepnm, &edgejpg);
-			edgejpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&edgejpg);
 
 			copyimg(&bwpnm, &bwjpg);
-			bwjpg.colorspace = JCS_GRAYSCALE;
 			compressjpg(&bwjpg);
 #endif
 #ifdef USE_PLAN9
