@@ -7,7 +7,7 @@
 #include <time.h>
 #include <math.h>
 #include <ixp.h>
-#include <libfreenect/libfreenect_sync.h>
+#include <libfreenect_sync.h>
 #ifdef USE_JPEG
 #include <jpeglib.h>
 #endif
@@ -374,23 +374,24 @@ compressplan9(FrnctImg *img)
 	int offs, runlen;		       /* offset, length of consumed data */
 	unsigned char dumpbuf[NDUMP];		   /* dump accumulator */
 	int ndump;			      /* length of dump accumulator */
-	int miny, dy;			   /* y values while unloading input */
 	int chunk, ncblock;
 	unsigned char *p, *q, *s, *es, *t;
-	unsigned char *buffer;
+	static unsigned char buffer[KWIDTH*2*KHEIGHT*2*4];
 	int y, len;
 
-	buffer = malloc(KWIDTH*2*KHEIGHT*2*4);
-
 	bpl = img->width * img->components;
-	ncblock = bpl;
-	if (ncblock < NCBLOCK)
-		ncblock = NCBLOCK;
 	n = img->height * bpl;
 	data = malloc(n);
+	memcpy(data, img->image + img->hdrlen, n);
+
+	ncblock = bpl*2;
+	if (ncblock < NCBLOCK)
+		ncblock = NCBLOCK;
 	hash = malloc(NHASH*sizeof(Hlist));
 	chain = malloc(NMEM*sizeof(Hlist));
 	outbuf = malloc(ncblock);
+	if (data == 0 || hash == 0 || chain == 0 || outbuf == 0)
+		goto ErrOut;
 	edata = data+n;
 	eout = outbuf+ncblock;
 	line = data;
@@ -411,7 +412,7 @@ compressplan9(FrnctImg *img)
 		while(line != edata){
 			ndump = 0;
 			eline = line + bpl;
-			for(p = line; p != eline; p++){
+			for(p = line; p != eline;){
 				if(eline-p < NRUN)
 					es = eline;
 				else
@@ -494,22 +495,24 @@ matchloop:				;
 			y++;
 		}
 	Bfull:
-		if(loutp == outbuf)
+		if(loutp == outbuf) {
+			fprintf(stderr, "skipping to ErrOut\n");
 			goto ErrOut;
+		}
 		n = loutp-outbuf;
-		sprintf(&buffer[len], "%11d %11ld ", y, n);
+		sprintf(buffer + len, "%11d %11ld ", y, n);
 		len += 12*2;
-		memcpy(&buffer[len], outbuf, n);
+		memcpy(buffer + len, outbuf, n);
 		len += n;
-		y = 0;
 	}
 
 	img->length = len;
+	memcpy(img->image, buffer, img->length);
 
 ErrOut:
+	free(data);
 	free(chain);
 	free(hash);
-	free(data);
 	free(outbuf);
 }
 #endif
@@ -558,7 +561,7 @@ static void fs_open(Ixp9Req *r)
 #endif
 	) {
 //		r->ofcall.ropen.iounit = 680*480*4;
-		if (istime(&rgbdlast, 1.0/30.0)) {
+		if (istime(&rgbdlast, 1.0/4.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
 			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
@@ -898,7 +901,7 @@ static void fs_read(Ixp9Req *r)
 		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 
-			if ((tiltstate==NULL || istime(&tiltlast,1.0/30.0)) &&
+			if ((tiltstate==NULL || istime(&tiltlast,1.0/4.0)) &&
 			    freenect_sync_get_tilt_state(&tiltstate, 0) != 0) {
 				ixp_respond(r, "freenect_sync_get_tilt_state");
 				return;
