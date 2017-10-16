@@ -397,7 +397,7 @@ compressplan9(FrnctImg *img)
 	line = data;
 	y = 0;
 
-	sprintf(buffer, "compressed\n%11s %11d %11d %11d %11d ", img->components == 1? "m8": "r8g8b8", 0, 0, img->width, img->height);
+	sprintf(buffer, "compressed\n%11s %11d %11d %11d %11d ", img->components == 1? "k8": "b8g8r8", 0, 0, img->width, img->height);
 	len = 11+5*12;
 
 	while (line != edata) {
