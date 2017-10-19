@@ -1234,11 +1234,12 @@ main(int argc, char *argv[]) {
 	bwjpg.image = calloc(1, bwpnm.length);
 #endif
 #ifdef USE_PLAN9
-	rgbimg.image = calloc(1, rgbpnm.length);
-	depthimg.image = calloc(1, depthpnm.length);
-	extraimg.image = calloc(1, extrapnm.length);
-	edgeimg.image = calloc(1, edgepnm.length);
-	bwimg.image = calloc(1, bwpnm.length);
+	// these need to be huge because compression may increase size
+	rgbimg.image = calloc(1, rgbpnm.length*2);
+	depthimg.image = calloc(1, depthpnm.length*2);
+	extraimg.image = calloc(1, extrapnm.length*2);
+	edgeimg.image = calloc(1, edgepnm.length*2);
+	bwimg.image = calloc(1, bwpnm.length*2);
 #endif
 
 	fd = ixp_announce (argv[1]);
