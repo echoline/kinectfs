@@ -95,7 +95,7 @@ int main(void) {
 		XPutImage (d, w, gc, i, 0, 0, 0, 0, 640, 480);
 
 		if (XCheckWindowEvent(d, w, ExposureMask | KeyPressMask, &e)) {
-			fprintf(stderr, "%p\n", &e);
+			//fprintf(stderr, "%p\n", &e);
 			if (e.type == Expose)
 				XPutImage (d, w, gc, i, 0, 0, 0, 0, 640, 480);
 
