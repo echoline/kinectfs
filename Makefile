@@ -16,6 +16,9 @@ depthtorgb: depthtorgb.c
 xrgb: xrgb.c
 	gcc -o xrgb xrgb.c -lX11 -g
 
+xjpg: xjpg.c
+	gcc -o xjpg xjpg.c -lX11 -ljpeg -g
+
 rgbtohsv: rgbtohsv.c
 
 gtkrgbanim: gtkrgbanim.c
