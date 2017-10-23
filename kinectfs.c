@@ -8,6 +8,9 @@
 #include <math.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
+#ifdef USE_AUDIO
+#include <libfreenect_audio.h>
+#endif
 #ifdef USE_JPEG
 #include <jpeglib.h>
 #endif
@@ -54,7 +57,7 @@ char *paths[] = { "/", "tilt", "led", "rgb.pnm", "depth.pnm", "extra.pnm",
 	"rgb", "depth", "extra", "edge", "bw",
 #endif
 #ifdef USE_AUDIO
-	"mic0", "mic1", "mic2", "mic3",
+	"mic0.raw", "mic1.raw", "mic2.raw", "mic3.raw",
 #endif
 	 };
 unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -619,11 +622,7 @@ static void fs_open(Ixp9Req *r)
 			// need black and white first for edges
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
-				c = r2blut[((rgbpnm.image[j*3+rgbpnm.hdrlen] << 16) |
-					  (rgbpnm.image[j*3+rgbpnm.hdrlen+1] << 8) |
-					  (rgbpnm.image[j*3+rgbpnm.hdrlen+2]))];
-				if (c > 0xFF)
-					c = 0xFF;
+				c = r2blut[((rgbpnm.image[j*3+rgbpnm.hdrlen]<<16) | (rgbpnm.image[j*3+rgbpnm.hdrlen+1]<<8) | (rgbpnm.image[j*3+rgbpnm.hdrlen+2]))];
 				bwpnm.image[j + bwpnm.hdrlen] = c;
 				extrapnm.image[j*3 + extrapnm.hdrlen] = c;
 			}
@@ -887,7 +886,7 @@ static void fs_read(Ixp9Req *r)
 		i = path - Qmic0;
 
 		size = r->ifcall.tread.count;
-		buf = malloc (size);
+		buf = malloc(size);
 
 		n = audiohead[i] - f->offset;
 
@@ -900,7 +899,7 @@ static void fs_read(Ixp9Req *r)
 		if ((audiolengths[i] >= sizeof(int32_t)) && (n == 0))
 			size = n = sizeof(int32_t);
 
-		memcpy (buf, &audio[i][audiolengths[i] - size], n);
+		memcpy (buf, audio[i] + audiolengths[i] - size, n);
 
 		f->offset = audiohead[i] - size + n;
 
@@ -1141,7 +1140,8 @@ Ixp9Srv p9srv = {
 	.wstat		= fs_wstat,
 };
 
-/*void
+#ifdef USE_AUDIO
+void
 freenect_do_one (long ms, void *aux)
 {
 	struct timeval tv = { 0, 0 };
@@ -1150,7 +1150,8 @@ freenect_do_one (long ms, void *aux)
 		exit (-1);
 	}
 	ixp_settimer(&server, 1, freenect_do_one, aux);
-}*/
+}
+#endif
 
 int
 main(int argc, char *argv[]) {
@@ -1169,6 +1170,7 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 #ifdef USE_AUDIO
+	freenect_device *f_dev;
 	freenect_select_subdevices (f_ctx, FREENECT_DEVICE_AUDIO);
 #endif
 
@@ -1261,7 +1263,9 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 
-//	ixp_settimer(&server, 1, freenect_do_one, f_ctx);
+#ifdef USE_AUDIO
+	ixp_settimer(&server, 1, freenect_do_one, f_ctx);
+#endif
 
 	for (i = 0; i < Npaths; i++) {
 		mtimes[i] = time(NULL);
