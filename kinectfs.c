@@ -249,6 +249,14 @@ dostat(int path, IxpStat *stat) {
 		stat->length = bwimg.length;
 		break;
 #endif
+#ifdef USE_AUDIO
+	case Qmic0:
+	case Qmic1:
+	case Qmic2:
+	case Qmic3:
+		stat->length = audiolengths[stat->qid.path - Qmic0];
+		break;
+#endif
 	case Qtilt:
 	case Qled:
 		stat->mode |= P9_DMWRITE;
