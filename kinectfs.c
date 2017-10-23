@@ -91,8 +91,8 @@ static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
-#define KWIDTH 640
-#define KHEIGHT 480
+#define KWIDTH 160
+#define KHEIGHT 120
 
 typedef struct _FidAux {
 	unsigned int 	version;
@@ -560,7 +560,6 @@ static void fs_open(Ixp9Req *r)
 	  || path == Qbw
 #endif
 	) {
-//		r->ofcall.ropen.iounit = 680*480*4;
 		if (istime(&rgbdlast, 1.0/4.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
@@ -579,44 +578,54 @@ static void fs_open(Ixp9Req *r)
 			rgbpnm.hdrlen = 15;
 			rgbpnm.components = 3;
 			rgbpnm.length = rgbpnm.width*rgbpnm.height*rgbpnm.components+rgbpnm.hdrlen;
-			memcpy(rgbpnm.image, "P6\n640 480\n255\n", rgbpnm.hdrlen);
+			memcpy(rgbpnm.image, "P6\n160 120\n255\n", rgbpnm.hdrlen);
 
 			depthpnm.width = KWIDTH;
 			depthpnm.height = KHEIGHT;
 			depthpnm.hdrlen = 15;
 			depthpnm.components = 1;
 			depthpnm.length = depthpnm.width*depthpnm.height*depthpnm.components+depthpnm.hdrlen;
-			memcpy(depthpnm.image, "P5\n640 480\n255\n", depthpnm.hdrlen);
+			memcpy(depthpnm.image, "P5\n160 120\n255\n", depthpnm.hdrlen);
 
-			extrapnm.width = KWIDTH*2;
-			extrapnm.height = KHEIGHT*2;
-			extrapnm.hdrlen = 16;
-			extrapnm.components = 1;
+			extrapnm.width = KWIDTH;
+			extrapnm.height = KHEIGHT;
+			extrapnm.hdrlen = 15;
+			extrapnm.components = 3;
 			extrapnm.length = extrapnm.width*extrapnm.height*extrapnm.components+extrapnm.hdrlen;
-			memcpy(extrapnm.image, "P5\n1280 960\n255\n", extrapnm.hdrlen);
+			memcpy(extrapnm.image, "P6\n160 120\n255\n", extrapnm.hdrlen);
 
 			edgepnm.width = KWIDTH;
 			edgepnm.height = KHEIGHT;
 			edgepnm.hdrlen = 15;
 			edgepnm.components = 1;
 			edgepnm.length = edgepnm.width*edgepnm.height*edgepnm.components+edgepnm.hdrlen;
-			memcpy(edgepnm.image, "P5\n640 480\n255\n", edgepnm.hdrlen);
+			memcpy(edgepnm.image, "P5\n160 120\n255\n", edgepnm.hdrlen);
 
 			bwpnm.width = KWIDTH;
 			bwpnm.height = KHEIGHT;
 			bwpnm.hdrlen = 15;
 			bwpnm.components = 1;
 			bwpnm.length = bwpnm.width*bwpnm.height*bwpnm.components+bwpnm.hdrlen;
-			memcpy(bwpnm.image, "P5\n640 480\n255\n", bwpnm.hdrlen);
+			memcpy(bwpnm.image, "P5\n160 120\n255\n", bwpnm.hdrlen);
 
-			memcpy(rgbpnm.image+rgbpnm.hdrlen, rgbbuf, rgbpnm.length-rgbpnm.hdrlen);
-			memset(edgepnm.image+edgepnm.hdrlen, 0, edgepnm.length-edgepnm.hdrlen);
-			memset(extrapnm.image+extrapnm.hdrlen, 0, extrapnm.length-extrapnm.hdrlen);
+			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
+				for (l = 0; l < 3; l++) {
+					j = 0;
+					for (xp = 0; xp < 4; xp++) for (yp = 0; yp < 4; yp++)
+						j += rgbbuf[(((y*4+yp)*KWIDTH+x)*4+xp)*3+l];
+					rgbpnm.image[rgbpnm.hdrlen+((y*KWIDTH)+x)*3+l] = j / 16;
+				}
+			}
 			// need black and white first for edges
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
-				c = r2blut[((*(uint32_t*)&rgbbuf[j * 3]) & 0xFFFFFF00) >> 8];
-				extrapnm.image[y * (KWIDTH*2) + x + extrapnm.hdrlen] = bwpnm.image[j + bwpnm.hdrlen] = (c & 0xFF);
+				c = r2blut[((rgbpnm.image[j*3+rgbpnm.hdrlen] << 16) |
+					  (rgbpnm.image[j*3+rgbpnm.hdrlen+1] << 8) |
+					  (rgbpnm.image[j*3+rgbpnm.hdrlen+2]))];
+				if (c > 0xFF)
+					c = 0xFF;
+				bwpnm.image[j + bwpnm.hdrlen] = c;
+				extrapnm.image[j*3 + extrapnm.hdrlen] = c;
 			}
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
@@ -624,17 +633,21 @@ static void fs_open(Ixp9Req *r)
 
 				if (x > 0 && x < (KWIDTH-1) && y > 0 && y < (KHEIGHT-1)) {
 					k = abs(bwpnm.image[l - (KWIDTH+1)] * -1 + bwpnm.image[l - (KWIDTH-1)] * 1 + bwpnm.image[l - 1] * -2 + bwpnm.image[l + 1] * 2 + bwpnm.image[l + (KWIDTH-1)] * -1 + bwpnm.image[l + (KWIDTH+1)] * 1 + bwpnm.image[l - (KWIDTH+1)] * 1 + bwpnm.image[l - KWIDTH] * 2 + bwpnm.image[l - (KWIDTH-1)] * 1 + bwpnm.image[l + (KWIDTH-1)] * -1 + bwpnm.image[l + KWIDTH] * -2 + bwpnm.image[l + (KWIDTH+1)] * -1);
-					extrapnm.image[y * (KWIDTH*2) + x + KWIDTH + extrapnm.hdrlen] = edgepnm.image[l] = k & 0xFF;
+					extrapnm.image[(y * KWIDTH + x) * 3 + 1 + extrapnm.hdrlen] = edgepnm.image[l] = k & 0xFF;
 				}
 
-				s = depthbuf[j * 2];
-				s |= depthbuf[j * 2 + 1] << 8;
+				k = 0;
+				for (xp = 0; xp < 4; xp++) for (yp = 0; yp < 4; yp++) {
+					s = depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2];
+					s |= depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2 + 1] << 8;
 
-				if (s >= 2048)
-					s = 0;
+					if (s >= 2048)
+						s = 0;
 
-				k = s & 0x7FF;
-				extrapnm.image[(y+KHEIGHT) * (KWIDTH*2) + x + extrapnm.hdrlen] = depthpnm.image[l] = k >> 3;
+					k += s & 0x7FF;
+				}
+				k /= 16;
+				extrapnm.image[(y * KWIDTH + x) * 3 + 2 + extrapnm.hdrlen] = depthpnm.image[l] = k >> 3;
 			}
 #ifdef USE_JPEG
 			copyimg(&rgbpnm, &rgbjpg);
@@ -1216,11 +1229,11 @@ main(int argc, char *argv[]) {
 #endif
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
-	rgbpnm.length = 640*480*3+15;
-	depthpnm.length = 640*480*1+15;
-	extrapnm.length = 1280*960*1+16;
-	edgepnm.length = 640*480*1+15;
-	bwpnm.length = 640*480*1+15;
+	rgbpnm.length = 160*120*3+15;
+	depthpnm.length = 160*120*1+15;
+	extrapnm.length = 160*120*3+16;
+	edgepnm.length = 160*120*1+15;
+	bwpnm.length = 160*120*1+15;
 	rgbpnm.image = calloc(1, rgbpnm.length);
 	depthpnm.image = calloc(1, depthpnm.length);
 	extrapnm.image = calloc(1, extrapnm.length);
