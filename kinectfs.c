@@ -54,7 +54,7 @@ char *paths[] = { "/", "tilt", "led", "rgb.pnm", "depth.pnm", "extra.pnm",
 	"rgb.jpg", "depth.jpg", "extra.jpg", "edge.jpg", "bw.jpg",
 #endif
 #ifdef USE_PLAN9
-	"rgb", "depth", "extra", "edge", "bw",
+	"rgb.bit", "depth.bit", "extra.bit", "edge.bit", "bw.bit",
 #endif
 #ifdef USE_AUDIO
 	"mic0.raw", "mic1.raw", "mic2.raw", "mic3.raw",
