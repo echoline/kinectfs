@@ -3,7 +3,7 @@ CFLAGS=-g
 all: kinectfs
 
 clean:
-	rm -f kinectfs depthtorgb rgbtohsv xrgb gtkrgbanim *.o *~
+	rm -f kinectfs depthtorgb rgbtohsv xrgb xjpg gtkrgbanim *.o *~
 
 kinectfs: kinectfs.c
 	gcc -g -o kinectfs kinectfs.c -lixp -lfreenect -lfreenect_sync -lm -DUSE_JPEG -ljpeg --std=c99 -DUSE_PLAN9 -DUSE_AUDIO
