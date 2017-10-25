@@ -3,20 +3,22 @@
 #include <string.h>
 #include <strings.h>
 #include <limits.h>
-#include <unistd.h>
 #include <time.h>
 #include <math.h>
+#include <unistd.h>
 #include <ixp.h>
 #include <libfreenect_sync.h>
 #ifdef USE_AUDIO
 #include <libfreenect_audio.h>
+#ifdef USE_OGG
+#include <vorbis/vorbisenc.h>
+#endif
 #endif
 #ifdef USE_JPEG
 #include <jpeglib.h>
 #endif
 
 unsigned char r2blut[0x1000000];
-unsigned char k2rlut[0x800][3];
 enum {
 	Qroot = 0,
 	Qtilt,
@@ -45,6 +47,9 @@ enum {
 	Qmic1,
 	Qmic2,
 	Qmic3,
+#ifdef USE_OGG
+	Qmics,
+#endif
 #endif
 	Npaths,
 };
@@ -58,10 +63,15 @@ char *paths[] = { "/", "tilt", "led", "rgb.pnm", "depth.pnm", "extra.pnm",
 #endif
 #ifdef USE_AUDIO
 	"mic0.raw", "mic1.raw", "mic2.raw", "mic3.raw",
+#ifdef USE_OGG
+	"mics.ogg"
+#endif
 #endif
 	 };
-unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+unsigned long mtimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+unsigned long atimes[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 typedef struct {
 	unsigned char* image;
@@ -94,15 +104,38 @@ static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
+freenect_context *f_ctx;
 #define KWIDTH 160
 #define KHEIGHT 120
+#define FRNCTIMG 1
+#define OGGINFO 2
+static IxpServer server;
+static IxpServer server;
+
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+typedef struct _OggInfo {
+	ogg_stream_state os;
+	ogg_page         og;
+	ogg_packet       op;
+	vorbis_info      vi;
+	vorbis_comment   vc;
+	vorbis_dsp_state vd;
+	vorbis_block     vb;
+	unsigned char*   buf;
+	unsigned long    buflen;
+	size_t           offsets[4];
+} OggInfo;
+#endif
+#endif
 
 typedef struct _FidAux {
 	unsigned int 	version;
 	unsigned long	length;
 	unsigned long	offset;
 	int		index; // for dirs
-	FrnctImg	*fim;
+	unsigned char	type;
+	void		*data;
 } FidAux;
 
 int
@@ -142,10 +175,19 @@ newfidaux(int path) {
 	  || path == Qbw
 #endif
 	) {
-		ret->fim = calloc(1, sizeof(FrnctImg));
+		ret->type = FRNCTIMG;
+		ret->data = (void*)calloc(1, sizeof(FrnctImg));
 		// shouldn't need more than this
-		ret->fim->image = calloc(1, KWIDTH*2*KHEIGHT*2*4);
+		((FrnctImg*)ret->data)->image = calloc(1, KWIDTH*2*KHEIGHT*2*4);
 	}
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+	if (path == Qmics) {
+		ret->type = OGGINFO;
+		ret->data = (void*)calloc(1, sizeof(OggInfo));
+	}
+#endif
+#endif
 
 	return ret;
 }
@@ -178,6 +220,18 @@ unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
 size_t audiohead[4] = { 0, 0, 0, 0 };
 #define AUDIO_BUFFER_SIZE 65536 * 8
+#define AUDIO_READ_SIZE 1024
+
+void
+freenect_do_one (long ms, void *aux)
+{
+	struct timeval tv = { 0, 0 };
+	if (freenect_process_events_timeout ((freenect_context*)aux, &tv) < 0) {
+		perror ("freenect_process_events");
+		exit (-1);
+	}
+	ixp_settimer(&server, 1, freenect_do_one, aux);
+}
 #endif
 
 //#define debug(...) fprintf (stderr, __VA_ARGS__);
@@ -548,8 +602,17 @@ static void fs_open(Ixp9Req *r)
 	int c;
 	unsigned short s;
 	int j, k, l, x, xm, xp, y, ym, yp;
-	int path = r->fid->qid.path;
+	int path;
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+	OggInfo *oi;
+	ogg_packet header;
+	ogg_packet header_comm;
+	ogg_packet header_code;
+#endif
+#endif
 
+	path = r->fid->qid.path;
 	if (path < 0 || path >= Npaths) {
 		ixp_respond(r, "file not found");
 		return;
@@ -695,52 +758,52 @@ RGBDLOCK:
 		while(rgbdlock != 0) sleep(1);
 		switch(path){
 		case Qrgbpnm:
-			copyimg(&rgbpnm, f->fim);
+			copyimg(&rgbpnm, f->data);
 			break;
 		case Qdepthpnm:
-			copyimg(&depthpnm, f->fim);
+			copyimg(&depthpnm, f->data);
 			break;
 		case Qextrapnm:
-			copyimg(&extrapnm, f->fim);
+			copyimg(&extrapnm, f->data);
 			break;
 		case Qedgepnm:
-			copyimg(&edgepnm, f->fim);
+			copyimg(&edgepnm, f->data);
 			break;
 		case Qbwpnm:
-			copyimg(&bwpnm, f->fim);
+			copyimg(&bwpnm, f->data);
 			break;
 #ifdef USE_JPEG
 		case Qrgbjpg:
-			copyimg(&rgbjpg, f->fim);
+			copyimg(&rgbjpg, f->data);
 			break;
 		case Qdepthjpg:
-			copyimg(&depthjpg, f->fim);
+			copyimg(&depthjpg, f->data);
 			break;
 		case Qextrajpg:
-			copyimg(&extrajpg, f->fim);
+			copyimg(&extrajpg, f->data);
 			break;
 		case Qedgejpg:
-			copyimg(&edgejpg, f->fim);
+			copyimg(&edgejpg, f->data);
 			break;
 		case Qbwjpg:
-			copyimg(&bwjpg, f->fim);
+			copyimg(&bwjpg, f->data);
 			break;
 #endif
 #ifdef USE_PLAN9
 		case Qrgb:
-			copyimg(&rgbimg, f->fim);
+			copyimg(&rgbimg, f->data);
 			break;
 		case Qdepth:
-			copyimg(&depthimg, f->fim);
+			copyimg(&depthimg, f->data);
 			break;
 		case Qextra:
-			copyimg(&extraimg, f->fim);
+			copyimg(&extraimg, f->data);
 			break;
 		case Qedge:
-			copyimg(&edgeimg, f->fim);
+			copyimg(&edgeimg, f->data);
 			break;
 		case Qbw:
-			copyimg(&bwimg, f->fim);
+			copyimg(&bwimg, f->data);
 			break;
 #endif
 		default:
@@ -750,6 +813,39 @@ RGBDLOCK:
 		if(rgbdlock != 0)
 			goto RGBDLOCK;
 	}
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+	if (path == Qmics) {
+		oi = f->data;
+		vorbis_info_init(&oi->vi);
+		c = vorbis_encode_init_vbr(&oi->vi, 4, 16000, 0.4);
+		if (c != 0) {
+			ixp_respond(r, "vorbis_encode_init");
+			return;
+		}
+		vorbis_comment_init(&oi->vc);
+		vorbis_comment_add_tag(&oi->vc, "ENCODER", "kinectfs");
+		vorbis_analysis_init(&oi->vd, &oi->vi);
+		vorbis_block_init(&oi->vd, &oi->vb);
+		srand(time(NULL));
+		ogg_stream_init(&oi->os, rand());
+		vorbis_analysis_headerout(&oi->vd, &oi->vc, &header, &header_comm, &header_code);
+		ogg_stream_packetin(&oi->os, &header);
+		ogg_stream_packetin(&oi->os, &header_comm);
+		ogg_stream_packetin(&oi->os, &header_code);
+		c = ogg_stream_flush(&oi->os, &oi->og);
+		while (c != 0) {
+			oi->buflen += oi->og.header_len;
+			oi->buf = realloc(oi->buf, oi->buflen);
+			memcpy(oi->buf + oi->buflen - oi->og.header_len, oi->og.header, oi->og.header_len);
+			oi->buflen += oi->og.body_len;
+			oi->buf = realloc(oi->buf, oi->buflen);
+			memcpy(oi->buf + oi->buflen - oi->og.body_len, oi->og.body, oi->og.body_len);
+			c = ogg_stream_flush(&oi->os, &oi->og);
+		}
+	}
+#endif
+#endif
 
 	ixp_respond (r, NULL);
 }
@@ -807,7 +903,14 @@ static void fs_read(Ixp9Req *r)
 	int n, size;
 	int path;
 	static double dx, dy, dz;
-	int i;
+	int i, j, l;
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+	int eos;
+	OggInfo *oi;
+	float **obuf;
+#endif
+#endif
 
 	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
 
@@ -871,7 +974,7 @@ static void fs_read(Ixp9Req *r)
 			return;
 		}
 
-		r->ofcall.rread.count = f->fim->length - r->ifcall.tread.offset;
+		r->ofcall.rread.count = ((FrnctImg*)f->data)->length - r->ifcall.tread.offset;
 
 		if (r->ofcall.rread.count <= 0)
 			r->ofcall.rread.count = 0;
@@ -881,7 +984,7 @@ static void fs_read(Ixp9Req *r)
 
 		if (r->ofcall.rread.count != 0) {
 			r->ofcall.rread.data = malloc(r->ofcall.rread.count);
-			memcpy (r->ofcall.rread.data, &f->fim->image[r->ifcall.tread.offset], r->ofcall.rread.count);
+			memcpy (r->ofcall.rread.data, &((FrnctImg*)f->data)->image[r->ifcall.tread.offset], r->ofcall.rread.count);
 		}
 
 		ixp_respond (r, NULL);
@@ -916,6 +1019,82 @@ static void fs_read(Ixp9Req *r)
 
 		ixp_respond(r, NULL);
 		return;
+#ifdef USE_OGG
+	case Qmics:
+		oi = f->data;
+		eos = 0;
+		l = AUDIO_READ_SIZE*4;
+
+		for (i = 0; i < 4; i++) {
+			if (oi->offsets[i] == 0) {
+				if (audiolengths[i] < l && audiolengths[i] > 4)
+					oi->offsets[i] = audiohead[i] - 4;
+				else
+					oi->offsets[i] = audiohead[i] - l;
+			}
+		}
+
+		while (eos == 0 && oi->buflen < r->ifcall.tread.count) {
+			l = AUDIO_READ_SIZE*4;
+			for (i = 0; i < 4; i++) {
+				n = audiohead[i] - oi->offsets[i];
+				if (n < l)
+					l = n;
+			}
+			for (i = 0; i < 4; i++)
+				oi->offsets[i] += l;
+			l /= 4;
+			if (l == 0) 
+				break;
+
+			obuf = vorbis_analysis_buffer(&oi->vd, l);
+			for (i = 0; i < l; i++)
+				for (j = 0; j < 4; j++) {
+					obuf[j][i] = (float)(
+						     (audio[j][audiolengths[j] - (l - i)*4] << 24) |
+						     (audio[j][audiolengths[j] - (l - i)*4 + 1] << 16) |
+						     (audio[j][audiolengths[j] - (l - i)*4 + 2] << 8) |
+						     (audio[j][audiolengths[j] - (l - i)*4 + 3])
+						     ) / (float)INT_MAX;
+				}
+			vorbis_analysis_wrote(&oi->vd, i);
+
+			while (vorbis_analysis_blockout(&oi->vd, &oi->vb) == 1) {
+				vorbis_analysis(&oi->vb, NULL);
+				vorbis_bitrate_addblock(&oi->vb);
+				while (vorbis_bitrate_flushpacket(&oi->vd, &oi->op)) {
+					while (eos == 0) {
+						i = ogg_stream_pageout(&oi->os, &oi->og);
+						if (i == 0) break;
+						oi->buflen += oi->og.header_len;
+						oi->buf = realloc(oi->buf, oi->buflen);
+						memcpy(oi->buf + oi->buflen - oi->og.header_len, oi->og.header, oi->og.header_len);
+						oi->buflen += oi->og.body_len;
+						oi->buf = realloc(oi->buf, oi->buflen);
+						memcpy(oi->buf + oi->buflen - oi->og.body_len, oi->og.body, oi->og.body_len);
+						eos = ogg_page_eos(&oi->og);
+					}
+				}
+			}
+		}
+
+		n = oi->buflen;
+		if (n > r->ifcall.tread.count)
+			n = r->ifcall.tread.count;
+		if (n == oi->buflen && oi->buflen > 4)
+			n = 4;
+		buf = malloc(n);
+		memcpy(buf, oi->buf, n);
+		memmove(oi->buf, oi->buf + n, oi->buflen - n);
+		oi->buflen -= n;
+		r->ofcall.rread.data = buf;
+		r->ofcall.rread.count = n;
+		f->offset += n;
+		freenect_do_one (-1, f_ctx);
+
+		ixp_respond(r, NULL);
+		return;
+#endif
 #endif
 	case Qtilt:
 		if (r->ifcall.tread.offset == 0) {
@@ -925,14 +1104,15 @@ static void fs_read(Ixp9Req *r)
 			    freenect_sync_get_tilt_state(&tiltstate, 0) != 0) {
 				ixp_respond(r, "freenect_sync_get_tilt_state");
 				return;
-			} else {
-				freenect_get_mks_accel (tiltstate, &dx, &dy, &dz);
-
-				buf = malloc (size);
-				snprintf(buf, size, "%d %lf %lf %lf\n", tilt, dx, dy, dz);
-				r->ofcall.rread.count = strlen(buf);
-				r->ofcall.rread.data = buf;
 			}
+
+			freenect_get_mks_accel (tiltstate, &dx, &dy, &dz);
+
+			buf = malloc (size);
+			snprintf(buf, size, "%d %lf %lf %lf\n", tilt, dx, dy, dz);
+			r->ofcall.rread.count = strlen(buf);
+			r->ofcall.rread.data = buf;
+
 			atimes[path] = time(NULL);
 		} else {
 			r->ofcall.rread.count = 0;
@@ -1107,13 +1287,31 @@ static void fs_remove(Ixp9Req *r)
 static void fs_freefid(IxpFid *f)
 {
 	FidAux *faux = f->aux;
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+	OggInfo *oi;
+#endif
+#endif
 
 	debug ("fs_freefid");
 
 	if (faux != NULL) {
-		if (faux->fim != NULL) {
-			free(faux->fim->image);
-			free(faux->fim);
+		if (faux->data != NULL) {
+			if (faux->type == FRNCTIMG)
+				free(((FrnctImg*)faux->data)->image);
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+			if (faux->type == OGGINFO) {
+				oi = faux->data;
+				ogg_stream_clear(&oi->os);
+				vorbis_block_clear(&oi->vb);
+				vorbis_dsp_clear(&oi->vd);
+				vorbis_comment_clear(&oi->vc);
+				vorbis_info_clear(&oi->vi);
+			}
+#endif
+#endif
+			free(faux->data);
 		}
 
 		free (f->aux);
@@ -1129,10 +1327,9 @@ static void fs_wstat(Ixp9Req *r)
 {
 	debug ("fs_wstat\n");
 
-	ixp_respond (r, NULL);
+	ixp_respond (r, "permission denied");
 }
 
-static IxpServer server;
 Ixp9Srv p9srv = {
 	.open		= fs_open,
 	.walk		= fs_walk,
@@ -1148,24 +1345,10 @@ Ixp9Srv p9srv = {
 	.wstat		= fs_wstat,
 };
 
-#ifdef USE_AUDIO
-void
-freenect_do_one (long ms, void *aux)
-{
-	struct timeval tv = { 0, 0 };
-	if (freenect_process_events_timeout ((freenect_context*)aux, &tv) < 0) {
-		perror ("freenect_process_events");
-		exit (-1);
-	}
-	ixp_settimer(&server, 1, freenect_do_one, aux);
-}
-#endif
-
 int
 main(int argc, char *argv[]) {
 	int i, fd, c;
 	IxpConn *acceptor;
-	freenect_context *f_ctx;
 	float v;
 
 	if (argc != 2) {
@@ -1195,37 +1378,6 @@ main(int argc, char *argv[]) {
 			    (double)((i & 0xFF00) >> 8) * 0.5870 +
 			    (double)(i & 0xFF) * 0.1140;
 	}
-	for (i = 0; i < 0x800; i++) {
-		c = ((i & 0x1FF)/(double)0x200)*256;
-		switch (i & 0x600) {
-		case 0x000:
-			if (c == 0)
-				memset(k2rlut[i], 0x00, 3);
-			else {
-				k2rlut[i][0] = 255;
-				k2rlut[i][1] = c;
-				k2rlut[i][2] = 0;
-			}
-			break;
-		case 0x200:
-			k2rlut[i][0] = 255 - c;
-			k2rlut[i][1] = 255;
-			k2rlut[i][2] = 0;
-			break;
-		case 0x400:
-			k2rlut[i][0] = 0;
-			k2rlut[i][1] = 255;
-			k2rlut[i][2] = c;
-			break;
-		case 0x600:
-			k2rlut[i][0] = 0;
-			k2rlut[i][1] = 255 - c;
-			k2rlut[i][2] = 255;
-			break;
-		default:
-			debug ("k: %x\n", k);
-		}
-	}
 
 #ifdef USE_AUDIO
 	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
@@ -1237,11 +1389,12 @@ main(int argc, char *argv[]) {
 	freenect_set_audio_in_callback (f_dev, in_callback);
 	freenect_start_audio (f_dev);
 #endif
+
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
 	rgbpnm.length = 160*120*3+15;
 	depthpnm.length = 160*120*1+15;
-	extrapnm.length = 160*120*3+16;
+	extrapnm.length = 160*120*3+15;
 	edgepnm.length = 160*120*1+15;
 	bwpnm.length = 160*120*1+15;
 	rgbpnm.image = calloc(1, rgbpnm.length);
