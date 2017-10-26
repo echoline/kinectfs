@@ -7,6 +7,7 @@
 #include <math.h>
 #include <unistd.h>
 #include <ixp.h>
+#include <pthread.h>
 #include <libfreenect_sync.h>
 #ifdef USE_AUDIO
 #include <libfreenect_audio.h>
@@ -104,12 +105,10 @@ static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
-freenect_context *f_ctx;
 #define KWIDTH 160
 #define KHEIGHT 120
 #define FRNCTIMG 1
 #define OGGINFO 2
-static IxpServer server;
 static IxpServer server;
 
 #ifdef USE_AUDIO
@@ -122,9 +121,6 @@ typedef struct _OggInfo {
 	vorbis_comment   vc;
 	vorbis_dsp_state vd;
 	vorbis_block     vb;
-	unsigned char*   buf;
-	unsigned long    buflen;
-	size_t           offsets[4];
 } OggInfo;
 #endif
 #endif
@@ -180,14 +176,6 @@ newfidaux(int path) {
 		// shouldn't need more than this
 		((FrnctImg*)ret->data)->image = calloc(1, KWIDTH*2*KHEIGHT*2*4);
 	}
-#ifdef USE_AUDIO
-#ifdef USE_OGG
-	if (path == Qmics) {
-		ret->type = OGGINFO;
-		ret->data = (void*)calloc(1, sizeof(OggInfo));
-	}
-#endif
-#endif
 
 	return ret;
 }
@@ -220,7 +208,6 @@ unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
 size_t audiolengths[4] = { 0, 0, 0, 0 };
 size_t audiohead[4] = { 0, 0, 0, 0 };
 #define AUDIO_BUFFER_SIZE 65536 * 8
-#define AUDIO_READ_SIZE 1024
 
 void
 freenect_do_one (long ms, void *aux)
@@ -232,6 +219,18 @@ freenect_do_one (long ms, void *aux)
 	}
 	ixp_settimer(&server, 1, freenect_do_one, aux);
 }
+
+#ifdef USE_OGG
+#define AUDIO_READ_SIZE 1024
+unsigned char *ogg = NULL;
+unsigned char *ogghdr = NULL;
+size_t ogghdrlen = 0;
+size_t ogglen = 0;
+size_t ogglast = 0;
+size_t ogghead = 0;
+OggInfo *oi = NULL;
+pthread_mutex_t ogglock;
+#endif
 #endif
 
 //#define debug(...) fprintf (stderr, __VA_ARGS__);
@@ -330,9 +329,15 @@ void
 in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		int32_t *mic1, int32_t *mic2, int32_t *mic3,
 		int16_t *cancelled, void *unknown) {
-	int i;
+	int i, j;
 	int length;
 	int32_t *mic;
+	length = num_samples * sizeof (int32_t);
+#ifdef USE_OGG
+	int eos;
+	int done;
+	float **obuf;
+#endif
 
 	for (i = 0; i < 4; i++) {
 		switch (i) {
@@ -350,7 +355,6 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 			break;
 		}
 
-		length = num_samples * sizeof (int32_t);
 		audiolengths[i] += length;
 		audiohead[i] += length;
 
@@ -361,6 +365,71 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		memmove(audio[i], &audio[i][length], audiolengths[i]-length);
 		memcpy(&audio[i][audiolengths[i] - length], mic, length);
 	}
+
+#ifdef USE_OGG
+	eos = 0;
+	if (ogghead == audiohead[0]) {
+		vorbis_analysis_wrote(&oi->vd, 0);
+	} else {
+		ogghead += length;
+
+		obuf = vorbis_analysis_buffer(&oi->vd, num_samples);
+		for (i = 0; i < num_samples; i++)
+			for (j = 0; j < 4; j++) {
+				obuf[j][i] = (float)(
+					     (audio[j][audiolengths[j] - (num_samples - i)*4] << 24) |
+					     (audio[j][audiolengths[j] - (num_samples - i)*4 + 1] << 16) |
+					     (audio[j][audiolengths[j] - (num_samples - i)*4 + 2] << 8) |
+					     (audio[j][audiolengths[j] - (num_samples - i)*4 + 3])
+					     ) / (float)INT_MAX;
+			}
+		vorbis_analysis_wrote(&oi->vd, i);
+	}
+
+	while (1) {
+		i = vorbis_analysis_blockout(&oi->vd, &oi->vb);
+		if (i < 0) {
+			fprintf(stderr, "error: vorbis_analysis_blockout\n");
+			break;
+		}
+		if (i == 0)
+			break;
+		if (vorbis_analysis(&oi->vb, NULL) != 0) {
+			fprintf(stderr, "error: vorbis_analysis\n");
+			break;
+		}
+		if (vorbis_bitrate_addblock(&oi->vb) < 0) {
+			fprintf(stderr, "error: vorbis_bitrate_addblock\n");
+			break;
+		}
+		while (vorbis_bitrate_flushpacket(&oi->vd, &oi->op) == 1) {
+			while (eos == 0) {
+				i = ogg_stream_pageout(&oi->os, &oi->og);
+				if (i != 0)
+					break;
+				pthread_mutex_lock(&ogglock);
+				j = ogglen;
+				ogglen += oi->og.header_len;
+				ogg = realloc(ogg, ogglen);
+				memcpy(ogg + ogglen - oi->og.header_len, oi->og.header, oi->og.header_len);
+				ogglen += oi->og.body_len;
+				ogg = realloc(ogg, ogglen);
+				memcpy(ogg + ogglen - oi->og.body_len, oi->og.body, oi->og.body_len);
+				ogglast = j;
+				pthread_mutex_unlock(&ogglock);
+				if (ogg_page_eos(&oi->og) != 0)
+					eos = 1;
+			}
+		}
+	}
+	pthread_mutex_lock(&ogglock);
+	if (ogglen >= 65536*2) {
+		memmove(ogg, ogg + ogglast, ogglen - ogglast);
+		ogglen -= ogglast;
+		ogglast = 0;
+	}
+	pthread_mutex_unlock(&ogglock);
+#endif
 }
 #endif
 
@@ -603,14 +672,6 @@ static void fs_open(Ixp9Req *r)
 	unsigned short s;
 	int j, k, l, x, xm, xp, y, ym, yp;
 	int path;
-#ifdef USE_AUDIO
-#ifdef USE_OGG
-	OggInfo *oi;
-	ogg_packet header;
-	ogg_packet header_comm;
-	ogg_packet header_code;
-#endif
-#endif
 
 	path = r->fid->qid.path;
 	if (path < 0 || path >= Npaths) {
@@ -813,39 +874,6 @@ RGBDLOCK:
 		if(rgbdlock != 0)
 			goto RGBDLOCK;
 	}
-#ifdef USE_AUDIO
-#ifdef USE_OGG
-	if (path == Qmics) {
-		oi = f->data;
-		vorbis_info_init(&oi->vi);
-		c = vorbis_encode_init_vbr(&oi->vi, 4, 16000, 0.4);
-		if (c != 0) {
-			ixp_respond(r, "vorbis_encode_init");
-			return;
-		}
-		vorbis_comment_init(&oi->vc);
-		vorbis_comment_add_tag(&oi->vc, "ENCODER", "kinectfs");
-		vorbis_analysis_init(&oi->vd, &oi->vi);
-		vorbis_block_init(&oi->vd, &oi->vb);
-		srand(time(NULL));
-		ogg_stream_init(&oi->os, rand());
-		vorbis_analysis_headerout(&oi->vd, &oi->vc, &header, &header_comm, &header_code);
-		ogg_stream_packetin(&oi->os, &header);
-		ogg_stream_packetin(&oi->os, &header_comm);
-		ogg_stream_packetin(&oi->os, &header_code);
-		c = ogg_stream_flush(&oi->os, &oi->og);
-		while (c != 0) {
-			oi->buflen += oi->og.header_len;
-			oi->buf = realloc(oi->buf, oi->buflen);
-			memcpy(oi->buf + oi->buflen - oi->og.header_len, oi->og.header, oi->og.header_len);
-			oi->buflen += oi->og.body_len;
-			oi->buf = realloc(oi->buf, oi->buflen);
-			memcpy(oi->buf + oi->buflen - oi->og.body_len, oi->og.body, oi->og.body_len);
-			c = ogg_stream_flush(&oi->os, &oi->og);
-		}
-	}
-#endif
-#endif
 
 	ixp_respond (r, NULL);
 }
@@ -904,13 +932,6 @@ static void fs_read(Ixp9Req *r)
 	int path;
 	static double dx, dy, dz;
 	int i, j, l;
-#ifdef USE_AUDIO
-#ifdef USE_OGG
-	int eos;
-	OggInfo *oi;
-	float **obuf;
-#endif
-#endif
 
 	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
 
@@ -1007,8 +1028,10 @@ static void fs_read(Ixp9Req *r)
 		if (size < n)
 			n = size;
 
-		if ((audiolengths[i] >= sizeof(int32_t)) && (n == 0))
-			size = n = sizeof(int32_t);
+		if (n == 0) {
+			free(buf);
+			buf = NULL;
+		}
 
 		memcpy (buf, audio[i] + audiolengths[i] - size, n);
 
@@ -1021,76 +1044,32 @@ static void fs_read(Ixp9Req *r)
 		return;
 #ifdef USE_OGG
 	case Qmics:
-		oi = f->data;
-		eos = 0;
-		l = AUDIO_READ_SIZE*4;
+		if (f->offset < ogghdrlen) {
+			n = ogghdrlen - f->offset;
+			if (n > r->ifcall.tread.count)
+				n = r->ifcall.tread.count;
+			buf = malloc(n);
+			memcpy(buf, ogghdr + f->offset, n);
+			r->ofcall.rread.data = buf;
+			r->ofcall.rread.count = n;
+			f->offset += n;
 
-		for (i = 0; i < 4; i++) {
-			if (oi->offsets[i] == 0) {
-				if (audiolengths[i] < l && audiolengths[i] > 4)
-					oi->offsets[i] = audiohead[i] - 4;
-				else
-					oi->offsets[i] = audiohead[i] - l;
-			}
+			ixp_respond(r, NULL);
+			return;
 		}
 
-		while (eos == 0 && oi->buflen < r->ifcall.tread.count) {
-			l = AUDIO_READ_SIZE*4;
-			for (i = 0; i < 4; i++) {
-				n = audiohead[i] - oi->offsets[i];
-				if (n < l)
-					l = n;
-			}
-			for (i = 0; i < 4; i++)
-				oi->offsets[i] += l;
-			l /= 4;
-			if (l == 0) 
-				break;
-
-			obuf = vorbis_analysis_buffer(&oi->vd, l);
-			for (i = 0; i < l; i++)
-				for (j = 0; j < 4; j++) {
-					obuf[j][i] = (float)(
-						     (audio[j][audiolengths[j] - (l - i)*4] << 24) |
-						     (audio[j][audiolengths[j] - (l - i)*4 + 1] << 16) |
-						     (audio[j][audiolengths[j] - (l - i)*4 + 2] << 8) |
-						     (audio[j][audiolengths[j] - (l - i)*4 + 3])
-						     ) / (float)INT_MAX;
-				}
-			vorbis_analysis_wrote(&oi->vd, i);
-
-			while (vorbis_analysis_blockout(&oi->vd, &oi->vb) == 1) {
-				vorbis_analysis(&oi->vb, NULL);
-				vorbis_bitrate_addblock(&oi->vb);
-				while (vorbis_bitrate_flushpacket(&oi->vd, &oi->op)) {
-					while (eos == 0) {
-						i = ogg_stream_pageout(&oi->os, &oi->og);
-						if (i == 0) break;
-						oi->buflen += oi->og.header_len;
-						oi->buf = realloc(oi->buf, oi->buflen);
-						memcpy(oi->buf + oi->buflen - oi->og.header_len, oi->og.header, oi->og.header_len);
-						oi->buflen += oi->og.body_len;
-						oi->buf = realloc(oi->buf, oi->buflen);
-						memcpy(oi->buf + oi->buflen - oi->og.body_len, oi->og.body, oi->og.body_len);
-						eos = ogg_page_eos(&oi->og);
-					}
-				}
-			}
-		}
-
-		n = oi->buflen;
+		n = ogglen - ogglast;
 		if (n > r->ifcall.tread.count)
 			n = r->ifcall.tread.count;
-		if (n == oi->buflen && oi->buflen > 4)
-			n = 4;
-		buf = malloc(n);
-		memcpy(buf, oi->buf, n);
-		memmove(oi->buf, oi->buf + n, oi->buflen - n);
-		oi->buflen -= n;
-		r->ofcall.rread.data = buf;
-		r->ofcall.rread.count = n;
-		f->offset += n;
-		freenect_do_one (-1, f_ctx);
+		if (n <= 0) {
+			r->ofcall.rread.count = 0;
+		} else {
+			buf = malloc(n);
+			memcpy(buf, ogg + ogglast, n);
+			r->ofcall.rread.data = buf;
+			r->ofcall.rread.count = n;
+			f->offset += n;
+		}
 
 		ixp_respond(r, NULL);
 		return;
@@ -1287,30 +1266,12 @@ static void fs_remove(Ixp9Req *r)
 static void fs_freefid(IxpFid *f)
 {
 	FidAux *faux = f->aux;
-#ifdef USE_AUDIO
-#ifdef USE_OGG
-	OggInfo *oi;
-#endif
-#endif
-
 	debug ("fs_freefid");
 
 	if (faux != NULL) {
 		if (faux->data != NULL) {
 			if (faux->type == FRNCTIMG)
 				free(((FrnctImg*)faux->data)->image);
-#ifdef USE_AUDIO
-#ifdef USE_OGG
-			if (faux->type == OGGINFO) {
-				oi = faux->data;
-				ogg_stream_clear(&oi->os);
-				vorbis_block_clear(&oi->vb);
-				vorbis_dsp_clear(&oi->vd);
-				vorbis_comment_clear(&oi->vc);
-				vorbis_info_clear(&oi->vi);
-			}
-#endif
-#endif
 			free(faux->data);
 		}
 
@@ -1350,6 +1311,15 @@ main(int argc, char *argv[]) {
 	int i, fd, c;
 	IxpConn *acceptor;
 	float v;
+	freenect_context *f_ctx;
+#ifdef USE_AUDIO
+	freenect_device *f_dev;
+#ifdef USE_OGG
+	ogg_packet header;
+	ogg_packet header_comm;
+	ogg_packet header_code;
+#endif
+#endif
 
 	if (argc != 2) {
 		fprintf (stderr, "usage:\n\t%s proto!addr[!port]\n", argv[0]);
@@ -1361,7 +1331,6 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 #ifdef USE_AUDIO
-	freenect_device *f_dev;
 	freenect_select_subdevices (f_ctx, FREENECT_DEVICE_AUDIO);
 #endif
 
@@ -1380,6 +1349,35 @@ main(int argc, char *argv[]) {
 	}
 
 #ifdef USE_AUDIO
+#ifdef USE_OGG
+	oi = calloc(1, sizeof(OggInfo));
+	vorbis_info_init(&oi->vi);
+	i = vorbis_encode_init_vbr(&oi->vi, 4, 16000, 0.4);
+	if (i != 0) {
+		fprintf(stderr, "error: vorbis_encode_init_vbr");
+		return -1;
+	}
+	vorbis_comment_init(&oi->vc);
+	vorbis_comment_add_tag(&oi->vc, "ENCODER", "kinectfs");
+	vorbis_analysis_init(&oi->vd, &oi->vi);
+	vorbis_block_init(&oi->vd, &oi->vb);
+	srand(time(NULL));
+	ogg_stream_init(&oi->os, rand());
+	vorbis_analysis_headerout(&oi->vd, &oi->vc, &header, &header_comm, &header_code);
+	ogg_stream_packetin(&oi->os, &header);
+	ogg_stream_packetin(&oi->os, &header_comm);
+	ogg_stream_packetin(&oi->os, &header_code);
+	i = ogg_stream_flush(&oi->os, &oi->og);
+	while (i != 0) {
+		ogghdrlen += oi->og.header_len;
+		ogghdr = realloc(ogghdr, ogghdrlen);
+		memcpy(ogghdr + ogghdrlen - oi->og.header_len, oi->og.header, oi->og.header_len);
+		ogghdrlen += oi->og.body_len;
+		ogghdr = realloc(ogghdr, ogghdrlen);
+		memcpy(ogghdr + ogghdrlen - oi->og.body_len, oi->og.body, oi->og.body_len);
+		i = ogg_stream_flush(&oi->os, &oi->og);
+	}
+#endif
 	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
 		fprintf (stderr, "could not open kinect audio\n");
 		freenect_shutdown (f_ctx);
@@ -1438,6 +1436,16 @@ main(int argc, char *argv[]) {
 	fprintf (stderr, "%s\n", ixp_errbuf());
 
 	freenect_shutdown (f_ctx);
+
+#ifdef USE_AUDIO
+#ifdef USE_OGG
+	ogg_stream_clear(&oi->os);
+	vorbis_block_clear(&oi->vb);
+	vorbis_dsp_clear(&oi->vd);
+	vorbis_comment_clear(&oi->vc);
+	vorbis_info_clear(&oi->vi);
+#endif
+#endif
 
 	return -1;
 }
