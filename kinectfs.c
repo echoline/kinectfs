@@ -105,8 +105,9 @@ static struct timeval rgbdlast;
 static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
-#define KWIDTH 160
-#define KHEIGHT 120
+static int KWIDTH = 640;
+static int KHEIGHT = 480;
+static int SCALE = 0;
 #define FRNCTIMG 1
 #define OGGINFO 2
 static IxpServer server;
@@ -126,12 +127,12 @@ typedef struct _OggInfo {
 #endif
 
 typedef struct _FidAux {
-	unsigned int 	version;
-	unsigned long	length;
-	unsigned long	offset;
-	int		index; // for dirs
-	unsigned char	type;
-	void		*data;
+	unsigned int 		version;
+	unsigned long		length;
+	unsigned long long	offset;
+	int			index; // for dirs
+	unsigned char		type;
+	void			*data;
 } FidAux;
 
 int
@@ -204,10 +205,9 @@ int depthmode = 4;
 int rgbmode = 0;
 
 #ifdef USE_AUDIO
-unsigned char *audio[4] = { NULL, NULL, NULL, NULL };
-size_t audiolengths[4] = { 0, 0, 0, 0 };
-size_t audiohead[4] = { 0, 0, 0, 0 };
-#define AUDIO_BUFFER_SIZE 65536 * 8
+unsigned long long audiohead[4] = { 0, 0, 0, 0 };
+#define AUDIO_BUFFER_SIZE (1024*32)
+unsigned char audio[4][AUDIO_BUFFER_SIZE];
 
 void
 freenect_do_one (long ms, void *aux)
@@ -307,7 +307,7 @@ dostat(int path, IxpStat *stat) {
 	case Qmic1:
 	case Qmic2:
 	case Qmic3:
-		stat->length = audiolengths[stat->qid.path - Qmic0];
+		stat->length = AUDIO_BUFFER_SIZE;
 		break;
 #endif
 	case Qtilt:
@@ -329,15 +329,16 @@ void
 in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		int32_t *mic1, int32_t *mic2, int32_t *mic3,
 		int16_t *cancelled, void *unknown) {
-	int i, j;
+	int i, j, k;
 	int length;
 	int32_t *mic;
-	length = num_samples * sizeof (int32_t);
 #ifdef USE_OGG
 	int eos;
 	int done;
 	float **obuf;
 #endif
+
+	length = num_samples * sizeof (int32_t);
 
 	for (i = 0; i < 4; i++) {
 		switch (i) {
@@ -355,15 +356,16 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 			break;
 		}
 
-		audiolengths[i] += length;
+		j = audiohead[i] & (AUDIO_BUFFER_SIZE-1);
+		k = AUDIO_BUFFER_SIZE - j;
+
+		if (k >= length)
+			memcpy(audio[i] + j, mic, length);
+		else {
+			memcpy(audio[i] + j, mic, k);
+			memcpy(audio[i], mic + k, length - k);
+		}
 		audiohead[i] += length;
-
-		if (audiolengths[i] > AUDIO_BUFFER_SIZE)
-			audiolengths[i] = AUDIO_BUFFER_SIZE;
-
-		audio[i] = realloc (audio[i], audiolengths[i]);
-		memmove(audio[i], &audio[i][length], audiolengths[i]-length);
-		memcpy(&audio[i][audiolengths[i] - length], mic, length);
 	}
 
 #ifdef USE_OGG
@@ -510,7 +512,7 @@ compressplan9(FrnctImg *img)
 	int ndump;			      /* length of dump accumulator */
 	int chunk, ncblock;
 	unsigned char *p, *q, *s, *es, *t;
-	static unsigned char buffer[KWIDTH*2*KHEIGHT*2*4];
+	static unsigned char *buffer = malloc(KWIDTH*2*KHEIGHT*2*4);
 	int y, len;
 
 	bpl = img->width * img->components;
@@ -644,6 +646,7 @@ matchloop:				;
 	memcpy(img->image, buffer, img->length);
 
 ErrOut:
+	free(buffer);
 	free(data);
 	free(chain);
 	free(hash);
@@ -713,43 +716,46 @@ static void fs_open(Ixp9Req *r)
 			rgbpnm.hdrlen = 15;
 			rgbpnm.components = 3;
 			rgbpnm.length = rgbpnm.width*rgbpnm.height*rgbpnm.components+rgbpnm.hdrlen;
-			memcpy(rgbpnm.image, "P6\n160 120\n255\n", rgbpnm.hdrlen);
+			memcpy(rgbpnm.image, "P6\n640 480\n255\n", rgbpnm.hdrlen);
 
 			depthpnm.width = KWIDTH;
 			depthpnm.height = KHEIGHT;
 			depthpnm.hdrlen = 15;
 			depthpnm.components = 1;
 			depthpnm.length = depthpnm.width*depthpnm.height*depthpnm.components+depthpnm.hdrlen;
-			memcpy(depthpnm.image, "P5\n160 120\n255\n", depthpnm.hdrlen);
+			memcpy(depthpnm.image, "P5\n640 480\n255\n", depthpnm.hdrlen);
 
 			extrapnm.width = KWIDTH;
 			extrapnm.height = KHEIGHT;
 			extrapnm.hdrlen = 15;
 			extrapnm.components = 3;
 			extrapnm.length = extrapnm.width*extrapnm.height*extrapnm.components+extrapnm.hdrlen;
-			memcpy(extrapnm.image, "P6\n160 120\n255\n", extrapnm.hdrlen);
+			memcpy(extrapnm.image, "P6\n640 480\n255\n", extrapnm.hdrlen);
 
 			edgepnm.width = KWIDTH;
 			edgepnm.height = KHEIGHT;
 			edgepnm.hdrlen = 15;
 			edgepnm.components = 1;
 			edgepnm.length = edgepnm.width*edgepnm.height*edgepnm.components+edgepnm.hdrlen;
-			memcpy(edgepnm.image, "P5\n160 120\n255\n", edgepnm.hdrlen);
+			memcpy(edgepnm.image, "P5\n640 480\n255\n", edgepnm.hdrlen);
 
 			bwpnm.width = KWIDTH;
 			bwpnm.height = KHEIGHT;
 			bwpnm.hdrlen = 15;
 			bwpnm.components = 1;
 			bwpnm.length = bwpnm.width*bwpnm.height*bwpnm.components+bwpnm.hdrlen;
-			memcpy(bwpnm.image, "P5\n160 120\n255\n", bwpnm.hdrlen);
+			memcpy(bwpnm.image, "P5\n640 480\n255\n", bwpnm.hdrlen);
 
-			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
+			if(SCALE) for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				for (l = 0; l < 3; l++) {
 					j = 0;
 					for (xp = 0; xp < 4; xp++) for (yp = 0; yp < 4; yp++)
 						j += rgbbuf[(((y*4+yp)*KWIDTH+x)*4+xp)*3+l];
 					rgbpnm.image[rgbpnm.hdrlen+((y*KWIDTH)+x)*3+l] = j / 16;
 				}
+			} else for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
+				for (l = 0; l < 3; l++)
+					rgbpnm.image[rgbpnm.hdrlen+((y*KWIDTH)+x)*3+l] = rgbbuf[(y*KWIDTH+x)*3+l];
 			}
 			// need black and white first for edges
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
@@ -768,16 +774,21 @@ static void fs_open(Ixp9Req *r)
 				}
 
 				k = 0;
-				for (xp = 0; xp < 4; xp++) for (yp = 0; yp < 4; yp++) {
-					s = depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2];
-					s |= depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2 + 1] << 8;
+				if (SCALE) {
+					for (xp = 0; xp < 4; xp++) for (yp = 0; yp < 4; yp++) {
+						s = depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2];
+						s |= depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2 + 1] << 8;
 
-					if (s >= 2048)
-						s = 0;
+						if (s >= 2048)
+							s = 0;
 
-					k += s & 0x7FF;
+						k += s & 0x7FF;
+					}
+					k /= 16;
+				} else {
+					k = depthbuf[(y * KWIDTH + x) * 2];
+					k |= depthbuf[(y * KWIDTH + x) * 2 + 1] << 8;
 				}
-				k /= 16;
 				extrapnm.image[(y * KWIDTH + x) * 3 + 2 + extrapnm.hdrlen] = depthpnm.image[l] = k >> 3;
 			}
 #ifdef USE_JPEG
@@ -1017,28 +1028,28 @@ static void fs_read(Ixp9Req *r)
 	case Qmic3:
 		i = path - Qmic0;
 
-		size = r->ifcall.tread.count;
-		buf = malloc(size);
+		if (f->offset == 0)
+			f->offset = (audiohead[i] + (AUDIO_BUFFER_SIZE >> 1)) & (AUDIO_BUFFER_SIZE-1);
 
-		n = audiohead[i] - f->offset;
-
-		if (size > audiolengths[i])
-			size = audiolengths[i];
-
-		if (size < n)
-			n = size;
-
-		if (n == 0) {
-			free(buf);
-			buf = NULL;
+		l = audiohead[i] - f->offset;
+		n = f->offset & (AUDIO_BUFFER_SIZE-1);
+		size = AUDIO_BUFFER_SIZE - n;
+		if (l < 0)
+			l = audiohead[i] + size;
+		if (l > r->ifcall.tread.count)
+			l = r->ifcall.tread.count;
+		buf = malloc(l);
+		if (size >= l)
+			memcpy(buf, audio[i] + n, l);
+		else {
+			memcpy(buf, audio[i] + n, size);
+			memcpy(buf + size, audio[i], l - size);
 		}
 
-		memcpy (buf, audio[i] + audiolengths[i] - size, n);
-
-		f->offset = audiohead[i] - size + n;
-
+		r->ofcall.rread.count = l;
 		r->ofcall.rread.data = buf;
-		r->ofcall.rread.count = n;
+
+		f->offset += l;
 
 		ixp_respond(r, NULL);
 		return;
@@ -1308,7 +1319,7 @@ Ixp9Srv p9srv = {
 
 int
 main(int argc, char *argv[]) {
-	int i, fd, c;
+	int i, fd, c, addr;
 	IxpConn *acceptor;
 	float v;
 	freenect_context *f_ctx;
@@ -1321,9 +1332,17 @@ main(int argc, char *argv[]) {
 #endif
 #endif
 
-	if (argc != 2) {
-		fprintf (stderr, "usage:\n\t%s proto!addr[!port]\n", argv[0]);
+	if (argc < 2) {
+		fprintf (stderr, "usage:\n\t%s [-s] proto!addr[!port]\n", argv[0]);
 		return -1;
+	}
+
+	for (addr = 1; addr < (argc-1); addr++) {
+		if (strcmp(argv[addr], "-s") == 0) {
+			//SCALE = 1;
+			//KWIDTH = 160;
+			//KHEIGHT = 120;
+		}
 	}
 
 	if (freenect_init (&f_ctx, NULL) < 0) {
@@ -1390,11 +1409,11 @@ main(int argc, char *argv[]) {
 
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
-	rgbpnm.length = 160*120*3+15;
-	depthpnm.length = 160*120*1+15;
-	extrapnm.length = 160*120*3+15;
-	edgepnm.length = 160*120*1+15;
-	bwpnm.length = 160*120*1+15;
+	rgbpnm.length = KWIDTH*KHEIGHT*3+15;
+	depthpnm.length = KWIDTH*KHEIGHT*1+15;
+	extrapnm.length = KWIDTH*KHEIGHT*3+15;
+	edgepnm.length = KWIDTH*KHEIGHT*1+15;
+	bwpnm.length = KWIDTH*KHEIGHT*1+15;
 	rgbpnm.image = calloc(1, rgbpnm.length);
 	depthpnm.image = calloc(1, depthpnm.length);
 	extrapnm.image = calloc(1, extrapnm.length);
@@ -1416,7 +1435,7 @@ main(int argc, char *argv[]) {
 	bwimg.image = calloc(1, bwpnm.length*2);
 #endif
 
-	fd = ixp_announce (argv[1]);
+	fd = ixp_announce (argv[addr]);
 	if (fd < 0) {
 		perror ("ixp_announce");
 		return -1;
