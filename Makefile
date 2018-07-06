@@ -17,7 +17,7 @@ xrgb: xrgb.c
 	gcc -o xrgb xrgb.c -lX11 -g
 
 xjpg: xjpg.c
-	gcc -o xjpg xjpg.c -lX11 -ljpeg -g
+	gcc -o xjpg xjpg.c `pkg-config --cflags --libs x11` `pkg-config --cflags --libs libjpeg` -g
 
 rgbtohsv: rgbtohsv.c
 

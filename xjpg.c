@@ -1,8 +1,6 @@
 #include <X11/Xlib.h>
-#include <X11/IntrinsicP.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <jpeglib.h>
  
@@ -19,7 +17,7 @@ main(int argc, char **argv) {
 	struct jpeg_error_mgr jerr;
 	int row_stride, width, height, pixel_size;
 	unsigned char *buf;
-	unsigned char bbuf[1920*1080*4];
+	unsigned char *bbuf;
 	FILE *file;
 
 	if (argc != 2) {
@@ -49,6 +47,7 @@ main(int argc, char **argv) {
 	row_stride = width * pixel_size;
 
 	buf = malloc(row_stride + 1);
+	bbuf = malloc(height * width * 4 + 4);
 
 	while (cinfo.output_scanline < cinfo.output_height)
 		jpeg_read_scanlines(&cinfo, &buf, 1);
@@ -122,24 +121,31 @@ main(int argc, char **argv) {
 		fclose(file);
 
 		i = XCreateImage(d, DefaultVisual(d, s), DefaultDepth(d, s),
-			ZPixmap, 0, bbuf, width, height, 32, width * 4);
+			ZPixmap, 0, 0, width, height, 32, 0);
+		i->data = bbuf;
 
-		XPutImage (d, w, gc, i, 0, 0, 0, 0, width, height);
+		if (i != NULL)
+			XPutImage (d, w, gc, i, 0, 0, 0, 0, width, height);
 
 		if (XCheckWindowEvent(d, w, ExposureMask | KeyPressMask, &e)) {
 			//fprintf(stderr, "%p\n", &e);
-			if (e.type == Expose)
+			if (e.type == Expose && i != NULL)
 				XPutImage (d, w, gc, i, 0, 0, 0, 0, width, height);
 
 			if (e.type == KeyPress) {
-				if (e.xkey.keycode == 9)
+				if (e.xkey.keycode == 9) {
 					break;
+				}
 			}
 		}
 
-		XDestroyImage(i);
+		i->data = NULL;
+
+		if (i != NULL)
+			XDestroyImage(i);
 	}
- 
+	free(bbuf);
+
 	XCloseDisplay(d);
 	return 0;
 }
