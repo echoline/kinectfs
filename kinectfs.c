@@ -130,9 +130,11 @@ typedef struct _FidAux {
 	unsigned int 		version;
 	unsigned long		length;
 	unsigned long long	offset;
-	int			index; // for dirs
+	size_t			index;
 	unsigned char		type;
 	void			*data;
+	unsigned long long 	ogghead;
+	unsigned long long	ogglast;
 } FidAux;
 
 int
@@ -206,7 +208,7 @@ int rgbmode = 0;
 
 #ifdef USE_AUDIO
 unsigned long long audiohead[4] = { 0, 0, 0, 0 };
-#define AUDIO_BUFFER_SIZE (1024*32)
+#define AUDIO_BUFFER_SIZE (1024*128)
 unsigned char audio[4][AUDIO_BUFFER_SIZE];
 
 void
@@ -221,15 +223,9 @@ freenect_do_one (long ms, void *aux)
 }
 
 #ifdef USE_OGG
-#define AUDIO_READ_SIZE 1024
-unsigned char *ogg = NULL;
 unsigned char *ogghdr = NULL;
 size_t ogghdrlen = 0;
-size_t ogglen = 0;
-size_t ogglast = 0;
-size_t ogghead = 0;
 OggInfo *oi = NULL;
-pthread_mutex_t ogglock;
 #endif
 #endif
 
@@ -245,19 +241,19 @@ dostat(int path, IxpStat *stat) {
 	stat->qid.type = (path != 0? P9_QTFILE: P9_QTDIR);
 	stat->qid.version = 0;
 	stat->qid.path = path;
-	stat->mode = P9_DMREAD;
+	stat->mode = 0444;
 	stat->length = 0;
 	switch (stat->qid.path) {
 	case Qroot:
-		stat->mode |= P9_DMDIR|P9_DMEXEC;
+		stat->mode |= P9_DMDIR|0111;
 		break;
 	case Qrgbpnm:
 		stat->length = rgbpnm.length;
-		stat->mode |= P9_DMWRITE;
+		stat->mode |= 0222;
 		break;
 	case Qdepthpnm:
 		stat->length = depthpnm.length;
-		stat->mode |= P9_DMWRITE;
+		stat->mode |= 0222;
 		break;
 	case Qextrapnm:
 		stat->length = extrapnm.length;
@@ -312,7 +308,7 @@ dostat(int path, IxpStat *stat) {
 #endif
 	case Qtilt:
 	case Qled:
-		stat->mode |= P9_DMWRITE;
+		stat->mode |= 0222;
 	default:
 		break;
 	}
@@ -329,14 +325,9 @@ void
 in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		int32_t *mic1, int32_t *mic2, int32_t *mic3,
 		int16_t *cancelled, void *unknown) {
-	int i, j, k;
+	int i, j, k, n;
 	int length;
 	int32_t *mic;
-#ifdef USE_OGG
-	int eos;
-	int done;
-	float **obuf;
-#endif
 
 	length = num_samples * sizeof (int32_t);
 
@@ -367,71 +358,6 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		}
 		audiohead[i] += length;
 	}
-
-#ifdef USE_OGG
-	eos = 0;
-	if (ogghead == audiohead[0]) {
-		vorbis_analysis_wrote(&oi->vd, 0);
-	} else {
-		ogghead += length;
-
-		obuf = vorbis_analysis_buffer(&oi->vd, num_samples);
-		for (i = 0; i < num_samples; i++)
-			for (j = 0; j < 4; j++) {
-				obuf[j][i] = (float)(
-					     (audio[j][audiolengths[j] - (num_samples - i)*4] << 24) |
-					     (audio[j][audiolengths[j] - (num_samples - i)*4 + 1] << 16) |
-					     (audio[j][audiolengths[j] - (num_samples - i)*4 + 2] << 8) |
-					     (audio[j][audiolengths[j] - (num_samples - i)*4 + 3])
-					     ) / (float)INT_MAX;
-			}
-		vorbis_analysis_wrote(&oi->vd, i);
-	}
-
-	while (1) {
-		i = vorbis_analysis_blockout(&oi->vd, &oi->vb);
-		if (i < 0) {
-			fprintf(stderr, "error: vorbis_analysis_blockout\n");
-			break;
-		}
-		if (i == 0)
-			break;
-		if (vorbis_analysis(&oi->vb, NULL) != 0) {
-			fprintf(stderr, "error: vorbis_analysis\n");
-			break;
-		}
-		if (vorbis_bitrate_addblock(&oi->vb) < 0) {
-			fprintf(stderr, "error: vorbis_bitrate_addblock\n");
-			break;
-		}
-		while (vorbis_bitrate_flushpacket(&oi->vd, &oi->op) == 1) {
-			while (eos == 0) {
-				i = ogg_stream_pageout(&oi->os, &oi->og);
-				if (i != 0)
-					break;
-				pthread_mutex_lock(&ogglock);
-				j = ogglen;
-				ogglen += oi->og.header_len;
-				ogg = realloc(ogg, ogglen);
-				memcpy(ogg + ogglen - oi->og.header_len, oi->og.header, oi->og.header_len);
-				ogglen += oi->og.body_len;
-				ogg = realloc(ogg, ogglen);
-				memcpy(ogg + ogglen - oi->og.body_len, oi->og.body, oi->og.body_len);
-				ogglast = j;
-				pthread_mutex_unlock(&ogglock);
-				if (ogg_page_eos(&oi->og) != 0)
-					eos = 1;
-			}
-		}
-	}
-	pthread_mutex_lock(&ogglock);
-	if (ogglen >= 65536*2) {
-		memmove(ogg, ogg + ogglast, ogglen - ogglast);
-		ogglen -= ogglast;
-		ogglast = 0;
-	}
-	pthread_mutex_unlock(&ogglock);
-#endif
 }
 #endif
 
@@ -779,17 +705,23 @@ static void fs_open(Ixp9Req *r)
 						s = depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2];
 						s |= depthbuf[((((y*4)+yp) * KWIDTH + x) * 4 + xp) * 2 + 1] << 8;
 
-						if (s >= 2048)
+						if (s >= 0x1000)
 							s = 0;
 
-						k += s & 0x7FF;
+						k += s & 0xFFF;
 					}
 					k /= 16;
 				} else {
-					k = depthbuf[(y * KWIDTH + x) * 2];
-					k |= depthbuf[(y * KWIDTH + x) * 2 + 1] << 8;
+					s = depthbuf[(y * KWIDTH + x) * 2];
+					s |= depthbuf[(y * KWIDTH + x) * 2 + 1] << 8;
+
+					if (s >= 0x1000)
+						s = 0;
+
+					k += s & 0xFFF;
 				}
-				extrapnm.image[(y * KWIDTH + x) * 3 + 2 + extrapnm.hdrlen] = depthpnm.image[l] = k >> 3;
+				k >>= 4;
+				extrapnm.image[(y * KWIDTH + x) * 3 + 2 + extrapnm.hdrlen] = depthpnm.image[l] = k == 0? 0: 255 - k;
 			}
 #ifdef USE_JPEG
 			copyimg(&rgbpnm, &rgbjpg);
@@ -943,6 +875,12 @@ static void fs_read(Ixp9Req *r)
 	int path;
 	static double dx, dy, dz;
 	int i, j, l;
+#ifdef USE_OGG
+	int done;
+	float **obuf;
+	unsigned char *oggnew;
+	unsigned char ogg[AUDIO_BUFFER_SIZE];
+#endif
 
 	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
 
@@ -1029,13 +967,11 @@ static void fs_read(Ixp9Req *r)
 		i = path - Qmic0;
 
 		if (f->offset == 0)
-			f->offset = (audiohead[i] + (AUDIO_BUFFER_SIZE >> 1)) & (AUDIO_BUFFER_SIZE-1);
+			f->offset = (audiohead[i] - 4) & (AUDIO_BUFFER_SIZE-1);
 
 		l = audiohead[i] - f->offset;
 		n = f->offset & (AUDIO_BUFFER_SIZE-1);
 		size = AUDIO_BUFFER_SIZE - n;
-		if (l < 0)
-			l = audiohead[i] + size;
 		if (l > r->ifcall.tread.count)
 			l = r->ifcall.tread.count;
 		buf = malloc(l);
@@ -1067,22 +1003,98 @@ static void fs_read(Ixp9Req *r)
 
 			ixp_respond(r, NULL);
 			return;
+		} else if (f->offset == ogghdrlen) {
+			f->ogglast = audiohead[0] - (AUDIO_BUFFER_SIZE>>1);
+			f->index = f->length = 0;
 		}
 
-		n = ogglen - ogglast;
+		size = audiohead[0] - f->ogglast;
+		j = (f->ogglast & (AUDIO_BUFFER_SIZE-1));
+		if (size < 0)
+			size = audiohead[0] + (AUDIO_BUFFER_SIZE - j);
+
+		if (f->index == f->length) {
+			j = j >> 2;
+			l = size >> 2;
+			n = (AUDIO_BUFFER_SIZE>>2)-1;
+			obuf = vorbis_analysis_buffer(&oi->vd, l);
+			for (i = 0; i < l; i++) {
+				obuf[0][i] = (float)((int32_t*)audio[0])[(j + i) & n] / INT_MAX;
+				obuf[1][i] = (float)((int32_t*)audio[1])[(j + i) & n] / INT_MAX;
+				obuf[2][i] = (float)((int32_t*)audio[2])[(j + i) & n] / INT_MAX;
+				obuf[3][i] = (float)((int32_t*)audio[3])[(j + i) & n] / INT_MAX;
+			}
+			vorbis_analysis_wrote(&oi->vd, l);
+			f->ogglast += size;
+			usleep(((float)size/64)*1000);
+
+			n = 0;
+			while (1) {
+				i = vorbis_analysis_blockout(&oi->vd, &oi->vb);
+				if (i < 0) {
+					fprintf(stderr, "error: vorbis_analysis_blockout\n");
+					break;
+				}
+				if (i == 0)
+					break;
+				if (vorbis_analysis(&oi->vb, NULL) != 0) {
+					fprintf(stderr, "error: vorbis_analysis\n");
+					break;
+				}
+				if (vorbis_bitrate_addblock(&oi->vb) < 0) {
+					fprintf(stderr, "error: vorbis_bitrate_addblock\n");
+					break;
+				}
+				while (vorbis_bitrate_flushpacket(&oi->vd, &oi->op) == 1) {
+					while (1) {
+						i = ogg_stream_pageout(&oi->os, &oi->og);
+						if (i != 0)
+							break;
+						j = oi->og.header_len + oi->og.body_len;
+						oggnew = malloc(j);
+						memcpy(oggnew, oi->og.header, oi->og.header_len);
+						memcpy(oggnew + oi->og.header_len, oi->og.body, oi->og.body_len);
+						l = AUDIO_BUFFER_SIZE - n;
+						if (l >= j) {
+							memcpy(ogg + n, oggnew, j);
+							n += j;
+						} else if (l != 0) {
+							memcpy(ogg + n, oggnew, l);
+							n += l;
+						}
+						free(oggnew);
+						if (ogg_page_eos(&oi->og))
+							break;
+					}
+				}
+			}
+
+			if (f->data != NULL) {
+				free(f->data);
+				f->data = NULL;
+			}
+			f->data = malloc(n);
+			memcpy(f->data, ogg, n);
+			f->length = n;
+			f->index = 0;
+			f->offset += n;
+		}
+
+		n = f->length - f->index;
 		if (n > r->ifcall.tread.count)
 			n = r->ifcall.tread.count;
 		if (n <= 0) {
 			r->ofcall.rread.count = 0;
 		} else {
 			buf = malloc(n);
-			memcpy(buf, ogg + ogglast, n);
+			memcpy(buf, f->data + f->index, n);
 			r->ofcall.rread.data = buf;
 			r->ofcall.rread.count = n;
-			f->offset += n;
+			f->index += n;
 		}
 
 		ixp_respond(r, NULL);
+
 		return;
 #endif
 #endif
