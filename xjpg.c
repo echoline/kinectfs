@@ -1,8 +1,12 @@
 #include <X11/Xlib.h>
+#include <X11/IntrinsicP.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <jpeglib.h>
+#include <sys/sendfile.h>
+#include <sys/stat.h>
+#include <fcntl.h>
  
 int
 main(int argc, char **argv) {
@@ -19,6 +23,7 @@ main(int argc, char **argv) {
 	unsigned char *buf;
 	unsigned char *bbuf;
 	FILE *file;
+	struct stat statbuf;
 
 	if (argc != 2) {
 		fprintf(stderr, "usage:\n\t%s /path/to/jpg\n", argv[0]);
@@ -70,9 +75,18 @@ main(int argc, char **argv) {
 	gc = DefaultGC (d, s);
 
 	while (1) {
-		file = fopen(argv[1], "rb");
-		if (file == NULL)
+		o = open(argv[1], O_RDONLY);
+		if (o < 0)
 			return -1;
+
+		if (fstat(o, &statbuf) != 0)
+			return -1;
+		printf("--ffserver\r\nContent-Type: image/jpeg\r\nContent-Length: %ld\r\n\r\n", statbuf.st_size);
+		while ((rc = read(o, bbuf, width*height*4)) > 0)
+			write(1, bbuf, rc);
+
+		lseek(o, 0, SEEK_SET);
+		file = fdopen(o, "rb");
 
 		cinfo.err = jpeg_std_error(&jerr);
 		jpeg_create_decompress(&cinfo);
@@ -119,6 +133,7 @@ main(int argc, char **argv) {
 		jpeg_destroy_decompress(&cinfo);
 
 		fclose(file);
+		close(o);
 
 		i = XCreateImage(d, DefaultVisual(d, s), DefaultDepth(d, s),
 			ZPixmap, 0, 0, width, height, 32, 0);

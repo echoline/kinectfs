@@ -624,7 +624,7 @@ static void fs_open(Ixp9Req *r)
 	  || path == Qbw
 #endif
 	) {
-		if (istime(&rgbdlast, 1.0/4.0)) {
+		if (istime(&rgbdlast, 1.0/30.0)) {
 			freenect_sync_get_tilt_state(&tiltstate, 0);
 			gettimeofday(&tiltlast, NULL);
 			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
