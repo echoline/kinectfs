@@ -158,6 +158,8 @@ main(int argc, char **argv) {
 
 		if (i != NULL)
 			XDestroyImage(i);
+
+		usleep(33 * 1000);
 	}
 	free(bbuf);
 
