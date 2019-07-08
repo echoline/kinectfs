@@ -19,6 +19,8 @@
 #include <jpeglib.h>
 #endif
 
+freenect_device *f_dev = NULL;
+
 unsigned char r2blut[0x1000000];
 enum {
 	Qroot = 0,
@@ -595,8 +597,8 @@ static void fs_open(Ixp9Req *r)
 {
 	FidAux *f;
 	unsigned int ts;
-	unsigned char *rgbbuf;
-	unsigned char *depthbuf;
+	unsigned char *rgbbuf = calloc(480, 640);
+	unsigned char *depthbuf = calloc(480, 640);
 	int c;
 	unsigned short s;
 	int j, k, l, x, xm, xp, y, ym, yp;
@@ -625,16 +627,17 @@ static void fs_open(Ixp9Req *r)
 #endif
 	) {
 		if (istime(&rgbdlast, 1.0/30.0)) {
-			freenect_sync_get_tilt_state(&tiltstate, 0);
+			freenect_update_tilt_state(f_dev);
+			tiltstate = freenect_get_tilt_state(f_dev);
 			gettimeofday(&tiltlast, NULL);
-			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
+/*EBC			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
 				ixp_respond(r, "freenect_sync_get_video");
 				return;
 			}
 			if (freenect_sync_get_depth((void**)(&depthbuf), &ts, 0, depthmode) != 0) {
 				ixp_respond(r, "freenect_sync_get_depth");
 				return;
-			}
+			}*/
 			rgbdlock = 1;
 
 			rgbpnm.width = KWIDTH;
@@ -1103,7 +1106,7 @@ static void fs_read(Ixp9Req *r)
 			size = r->ifcall.tread.count;
 
 			if ((tiltstate==NULL || istime(&tiltlast,1.0/4.0)) &&
-			    freenect_sync_get_tilt_state(&tiltstate, 0) != 0) {
+			    (tiltstate = freenect_get_tilt_state(f_dev)) == NULL) {
 				ixp_respond(r, "freenect_sync_get_tilt_state");
 				return;
 			}
@@ -1219,9 +1222,9 @@ static void fs_write(Ixp9Req *r)
 
 		mtimes[path] = time(NULL);
 
-		if (freenect_sync_set_tilt_degs (tilt, 0))
+		if (freenect_set_tilt_degs (f_dev, tilt)) {
 			ixp_respond(r, "kinect disconnected");
-		else {
+		} else {
 			ixp_respond(r, NULL);
 		}
 		break;
@@ -1234,9 +1237,9 @@ static void fs_write(Ixp9Req *r)
 
 		mtimes[path] = time(NULL);
 
-		if (freenect_sync_set_led (led, 0))
+		if (freenect_set_led (f_dev, led)) {
 			ixp_respond(r, "kinect disconnected");
-		else {
+		} else { 
 			ixp_respond(r, NULL);
 		}
 		break;
@@ -1335,8 +1338,9 @@ main(int argc, char *argv[]) {
 	IxpConn *acceptor;
 	float v;
 	freenect_context *f_ctx;
+	int devices = FREENECT_DEVICE_MOTOR | FREENECT_DEVICE_CAMERA;
 #ifdef USE_AUDIO
-	freenect_device *f_dev;
+	devices |= FREENECT_DEVICE_AUDIO;
 #ifdef USE_OGG
 	ogg_packet header;
 	ogg_packet header_comm;
@@ -1361,9 +1365,7 @@ main(int argc, char *argv[]) {
 		perror ("freenect_init");
 		return -1;
 	}
-#ifdef USE_AUDIO
-	freenect_select_subdevices (f_ctx, FREENECT_DEVICE_AUDIO);
-#endif
+	freenect_select_subdevices (f_ctx, devices);
 
 	if (freenect_num_devices (f_ctx) < 1) {
 		fprintf (stderr, "kinect not found\n");
@@ -1371,7 +1373,12 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 
-	freenect_sync_set_led (led, 0);
+	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
+		fprintf (stderr, "could not open kinect\n");
+		freenect_shutdown (f_ctx);
+		return -1;
+	}
+	freenect_set_led (f_dev, led);
 
 	for (i = 0; i < 0x1000000; i++) {
 		r2blut[i] = (double)((i & 0xFF0000) >> 16) * 0.2989 +
@@ -1409,12 +1416,9 @@ main(int argc, char *argv[]) {
 		i = ogg_stream_flush(&oi->os, &oi->og);
 	}
 #endif
-	if (freenect_open_device (f_ctx, &f_dev, 0) < 0) {
-		fprintf (stderr, "could not open kinect audio\n");
-		freenect_shutdown (f_ctx);
-		return -1;
-	}
+#endif
 
+#ifdef USE_AUDIO
 	freenect_set_audio_in_callback (f_dev, in_callback);
 	freenect_start_audio (f_dev);
 #endif
