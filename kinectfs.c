@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <ixp.h>
 #include <pthread.h>
-#include <libfreenect_sync.h>
+#include <libfreenect.h>
 #ifdef USE_AUDIO
 #include <libfreenect_audio.h>
 #ifdef USE_OGG
@@ -20,6 +20,10 @@
 #endif
 
 freenect_device *f_dev = NULL;
+unsigned char *rgbbuf;
+unsigned char *rgbback;
+unsigned char *depthbuf;
+unsigned char *depthback;
 
 unsigned char r2blut[0x1000000];
 enum {
@@ -213,6 +217,13 @@ unsigned long long audiohead[4] = { 0, 0, 0, 0 };
 #define AUDIO_BUFFER_SIZE (1024*128)
 unsigned char audio[4][AUDIO_BUFFER_SIZE];
 
+#ifdef USE_OGG
+unsigned char *ogghdr = NULL;
+size_t ogghdrlen = 0;
+OggInfo *oi = NULL;
+#endif
+#endif
+
 void
 freenect_do_one (long ms, void *aux)
 {
@@ -223,13 +234,6 @@ freenect_do_one (long ms, void *aux)
 	}
 	ixp_settimer(&server, 1, freenect_do_one, aux);
 }
-
-#ifdef USE_OGG
-unsigned char *ogghdr = NULL;
-size_t ogghdrlen = 0;
-OggInfo *oi = NULL;
-#endif
-#endif
 
 //#define debug(...) fprintf (stderr, __VA_ARGS__);
 #define debug(...) {};
@@ -324,7 +328,7 @@ dostat(int path, IxpStat *stat) {
 
 #ifdef USE_AUDIO
 void
-in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
+audio_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		int32_t *mic1, int32_t *mic2, int32_t *mic3,
 		int16_t *cancelled, void *unknown) {
 	int i, j, k, n;
@@ -362,6 +366,20 @@ in_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 	}
 }
 #endif
+
+void
+video_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
+	rgbback = rgbbuf;
+	freenect_set_video_buffer(dev, rgbback);
+	rgbbuf = buf;
+}
+
+void
+depth_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
+	depthback = depthbuf;
+	freenect_set_depth_buffer(dev, depthback);
+	depthbuf = buf;
+}
 
 #ifdef USE_JPEG
 void
@@ -597,8 +615,6 @@ static void fs_open(Ixp9Req *r)
 {
 	FidAux *f;
 	unsigned int ts;
-	unsigned char *rgbbuf = calloc(480, 640);
-	unsigned char *depthbuf = calloc(480, 640);
 	int c;
 	unsigned short s;
 	int j, k, l, x, xm, xp, y, ym, yp;
@@ -1105,10 +1121,13 @@ static void fs_read(Ixp9Req *r)
 		if (r->ifcall.tread.offset == 0) {
 			size = r->ifcall.tread.count;
 
-			if ((tiltstate==NULL || istime(&tiltlast,1.0/4.0)) &&
-			    (tiltstate = freenect_get_tilt_state(f_dev)) == NULL) {
-				ixp_respond(r, "freenect_sync_get_tilt_state");
-				return;
+			if (tiltstate==NULL || istime(&tiltlast,1.0/4.0)) {
+				freenect_update_tilt_state(f_dev);
+			    	tiltstate = freenect_get_tilt_state(f_dev);
+				if (tiltstate == NULL) {
+					ixp_respond(r, "freenect_get_tilt_state");
+					return;
+				}
 			}
 
 			freenect_get_mks_accel (tiltstate, &dx, &dy, &dz);
@@ -1365,6 +1384,7 @@ main(int argc, char *argv[]) {
 		perror ("freenect_init");
 		return -1;
 	}
+//	freenect_set_log_level (f_ctx, FREENECT_LOG_SPEW);
 	freenect_select_subdevices (f_ctx, devices);
 
 	if (freenect_num_devices (f_ctx) < 1) {
@@ -1418,10 +1438,23 @@ main(int argc, char *argv[]) {
 #endif
 #endif
 
+	rgbbuf = calloc(640, 480 * 3);
+	rgbback = calloc(640, 480 * 3);
+	depthbuf = calloc(640, 480 * 2);
+	depthback = calloc(640, 480 * 2);
+
 #ifdef USE_AUDIO
-	freenect_set_audio_in_callback (f_dev, in_callback);
+	freenect_set_audio_in_callback (f_dev, audio_callback);
 	freenect_start_audio (f_dev);
 #endif
+	freenect_set_video_callback (f_dev, video_callback);
+	freenect_set_video_mode (f_dev, freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, rgbmode));
+	freenect_set_video_buffer (f_dev, rgbback);
+	freenect_set_depth_callback (f_dev, depth_callback);
+	freenect_set_video_mode (f_dev, freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, depthmode));
+	freenect_set_video_buffer (f_dev, depthback);
+	freenect_start_video (f_dev); 
+	freenect_start_depth (f_dev);
 
 	memset(&rgbdlast, 0, sizeof(struct timeval));
 	memset(&tiltlast, 0, sizeof(struct timeval));
@@ -1457,9 +1490,7 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 
-#ifdef USE_AUDIO
 	ixp_settimer(&server, 1, freenect_do_one, f_ctx);
-#endif
 
 	for (i = 0; i < Npaths; i++) {
 		mtimes[i] = time(NULL);
