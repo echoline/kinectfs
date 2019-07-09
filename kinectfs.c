@@ -24,6 +24,7 @@ unsigned char *rgbbuf;
 unsigned char *rgbback;
 unsigned char *depthbuf;
 unsigned char *depthback;
+pthread_mutex_t bufmutex;
 
 unsigned char r2blut[0x1000000];
 enum {
@@ -108,7 +109,6 @@ static FrnctImg edgeimg;
 static FrnctImg bwimg;
 #endif
 static struct timeval rgbdlast;
-static int rgbdlock = 0;
 static freenect_raw_tilt_state *tiltstate = NULL;
 static struct timeval tiltlast;
 static int KWIDTH = 640;
@@ -224,15 +224,16 @@ OggInfo *oi = NULL;
 #endif
 #endif
 
-void
-freenect_do_one (long ms, void *aux)
+static void*
+pthread_loop(void *aux)
 {
-	struct timeval tv = { 0, 0 };
-	if (freenect_process_events_timeout ((freenect_context*)aux, &tv) < 0) {
-		perror ("freenect_process_events");
-		exit (-1);
+	while(1) {
+		struct timeval tv = { 1, 0 };
+		if (freenect_process_events_timeout ((freenect_context*)aux, &tv) < 0) {
+			perror ("freenect_process_events");
+			exit(-1);
+		}
 	}
-	ixp_settimer(&server, 1, freenect_do_one, aux);
 }
 
 //#define debug(...) fprintf (stderr, __VA_ARGS__);
@@ -369,16 +370,20 @@ audio_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 void
 video_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
+	pthread_mutex_lock(&bufmutex);
 	rgbback = rgbbuf;
 	freenect_set_video_buffer(dev, rgbback);
 	rgbbuf = buf;
+	pthread_mutex_unlock(&bufmutex);
 }
 
 void
 depth_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
+	pthread_mutex_lock(&bufmutex);
 	depthback = depthbuf;
 	freenect_set_depth_buffer(dev, depthback);
 	depthbuf = buf;
+	pthread_mutex_unlock(&bufmutex);
 }
 
 #ifdef USE_JPEG
@@ -643,18 +648,7 @@ static void fs_open(Ixp9Req *r)
 #endif
 	) {
 		if (istime(&rgbdlast, 1.0/30.0)) {
-			freenect_update_tilt_state(f_dev);
-			tiltstate = freenect_get_tilt_state(f_dev);
-			gettimeofday(&tiltlast, NULL);
-/*EBC			if (freenect_sync_get_video((void**)(&rgbbuf), &ts, 0, rgbmode) != 0) {
-				ixp_respond(r, "freenect_sync_get_video");
-				return;
-			}
-			if (freenect_sync_get_depth((void**)(&depthbuf), &ts, 0, depthmode) != 0) {
-				ixp_respond(r, "freenect_sync_get_depth");
-				return;
-			}*/
-			rgbdlock = 1;
+			pthread_mutex_lock(&bufmutex);
 
 			rgbpnm.width = KWIDTH;
 			rgbpnm.height = KHEIGHT;
@@ -742,6 +736,7 @@ static void fs_open(Ixp9Req *r)
 				k >>= 4;
 				extrapnm.image[(y * KWIDTH + x) * 3 + 2 + extrapnm.hdrlen] = depthpnm.image[l] = k == 0? 0: 255 - k;
 			}
+			pthread_mutex_unlock(&bufmutex);
 #ifdef USE_JPEG
 			copyimg(&rgbpnm, &rgbjpg);
 			compressjpg(&rgbjpg);
@@ -774,11 +769,8 @@ static void fs_open(Ixp9Req *r)
 			copyimg(&bwpnm, &bwimg);
 			compressplan9(&bwimg);
 #endif
-			rgbdlock = 0;
 		}
 
-RGBDLOCK:
-		while(rgbdlock != 0) sleep(1);
 		switch(path){
 		case Qrgbpnm:
 			copyimg(&rgbpnm, f->data);
@@ -833,8 +825,6 @@ RGBDLOCK:
 			ixp_respond(r, "file not found");
 			return;
 		}
-		if(rgbdlock != 0)
-			goto RGBDLOCK;
 	}
 
 	ixp_respond (r, NULL);
@@ -1380,6 +1370,8 @@ main(int argc, char *argv[]) {
 		}
 	}
 
+	pthread_mutex_init(&bufmutex, NULL);
+
 	if (freenect_init (&f_ctx, NULL) < 0) {
 		perror ("freenect_init");
 		return -1;
@@ -1438,21 +1430,22 @@ main(int argc, char *argv[]) {
 #endif
 #endif
 
+#ifdef USE_AUDIO
+	freenect_set_audio_in_callback (f_dev, audio_callback);
+	freenect_start_audio (f_dev);
+#endif
 	rgbbuf = calloc(640, 480 * 3);
 	rgbback = calloc(640, 480 * 3);
 	depthbuf = calloc(640, 480 * 2);
 	depthback = calloc(640, 480 * 2);
 
-#ifdef USE_AUDIO
-	freenect_set_audio_in_callback (f_dev, audio_callback);
-	freenect_start_audio (f_dev);
-#endif
 	freenect_set_video_callback (f_dev, video_callback);
-	freenect_set_video_mode (f_dev, freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, rgbmode));
 	freenect_set_video_buffer (f_dev, rgbback);
+	freenect_set_video_mode(f_dev, freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, rgbmode));
 	freenect_set_depth_callback (f_dev, depth_callback);
-	freenect_set_video_mode (f_dev, freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, depthmode));
-	freenect_set_video_buffer (f_dev, depthback);
+	freenect_set_depth_buffer (f_dev, depthback);
+	freenect_set_depth_mode(f_dev, freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM, depthmode));
+
 	freenect_start_video (f_dev); 
 	freenect_start_depth (f_dev);
 
@@ -1490,7 +1483,11 @@ main(int argc, char *argv[]) {
 		return -1;
 	}
 
-	ixp_settimer(&server, 1, freenect_do_one, f_ctx);
+	pthread_t camthread;
+	if (pthread_create(&camthread, NULL, pthread_loop, (void*)f_ctx) != 0) {
+		perror("pthread_create");
+		return -1;
+	}
 
 	for (i = 0; i < Npaths; i++) {
 		mtimes[i] = time(NULL);
