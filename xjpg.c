@@ -85,6 +85,7 @@ main(int argc, char **argv) {
 		while ((rc = read(o, bbuf, width*height*4)) > 0)
 			write(1, bbuf, rc);
 
+		fflush(stdout);
 		lseek(o, 0, SEEK_SET);
 		file = fdopen(o, "rb");
 

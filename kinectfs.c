@@ -25,6 +25,8 @@ unsigned char *rgbback;
 unsigned char *depthbuf;
 unsigned char *depthback;
 pthread_mutex_t bufmutex;
+pthread_mutex_t audiomutex;
+pthread_cond_t audiocond;
 
 unsigned char r2blut[0x1000000];
 enum {
@@ -338,6 +340,7 @@ audio_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 	length = num_samples * sizeof (int32_t);
 
+	pthread_mutex_lock(&audiomutex);
 	for (i = 0; i < 4; i++) {
 		switch (i) {
 		case 0:
@@ -365,6 +368,8 @@ audio_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 		}
 		audiohead[i] += length;
 	}
+	pthread_cond_signal(&audiocond);
+	pthread_mutex_unlock(&audiomutex);
 }
 #endif
 
@@ -976,9 +981,11 @@ static void fs_read(Ixp9Req *r)
 		i = path - Qmic0;
 
 		if (r->ifcall.tread.offset == 0)
-			f->offset = audiohead[i] - (AUDIO_BUFFER_SIZE>>1);
+			f->offset = audiohead[i];
 
-		l = audiohead[i] - f->offset;
+		pthread_mutex_lock(&audiomutex);
+		while ((l = audiohead[i] - f->offset) == 0)
+			pthread_cond_wait(&audiocond, &audiomutex);
 		n = f->offset & (AUDIO_BUFFER_SIZE-1);
 		size = AUDIO_BUFFER_SIZE - n;
 		if (l > r->ifcall.tread.count)
@@ -990,6 +997,7 @@ static void fs_read(Ixp9Req *r)
 			memcpy(buf, audio[i] + n, size);
 			memcpy(buf + size, audio[i], l - size);
 		}
+		pthread_mutex_unlock(&audiomutex);
 
 		r->ofcall.rread.count = l;
 		r->ofcall.rread.data = buf;
@@ -1371,6 +1379,8 @@ main(int argc, char *argv[]) {
 	}
 
 	pthread_mutex_init(&bufmutex, NULL);
+	pthread_mutex_init(&audiomutex, NULL);
+	pthread_cond_init(&audiocond, NULL);
 
 	if (freenect_init (&f_ctx, NULL) < 0) {
 		perror ("freenect_init");
