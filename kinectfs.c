@@ -975,8 +975,8 @@ static void fs_read(Ixp9Req *r)
 	case Qmic3:
 		i = path - Qmic0;
 
-		if (f->offset == 0)
-			f->offset = (audiohead[i] - 4) & (AUDIO_BUFFER_SIZE-1);
+		if (r->ifcall.tread.offset == 0)
+			f->offset = audiohead[i] - (AUDIO_BUFFER_SIZE>>1);
 
 		l = audiohead[i] - f->offset;
 		n = f->offset & (AUDIO_BUFFER_SIZE-1);
