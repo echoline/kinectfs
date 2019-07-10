@@ -1,12 +1,12 @@
 CFLAGS=-g
 
-all: kinectfs xjpg
+all: kinectfs xjpg mjpeg
 
 clean:
-	rm -f kinectfs depthtorgb rgbtohsv xrgb xjpg gtkrgbanim *.o *~
+	rm -f kinectfs depthtorgb rgbtohsv xrgb xjpg mjpeg gtkrgbanim *.o *~
 
 kinectfs: kinectfs.c
-	gcc -g -o kinectfs kinectfs.c -I/usr/local/include/libfreenect -L/usr/local/lib -lixp -lfreenect -lm -DUSE_JPEG -ljpeg #-DUSE_AUDIO #-DUSE_OGG -logg -lvorbis -lvorbisenc #-DUSE_PLAN9
+	gcc -g -o kinectfs kinectfs.c -I/usr/local/include/libfreenect -L/usr/local/lib -lixp -lfreenect -lm -DUSE_JPEG -ljpeg -DUSE_AUDIO #-DUSE_OGG -logg -lvorbis -lvorbisenc #-DUSE_PLAN9
 #	@echo SUDO: for port 564
 #	sudo setcap 'cap_net_bind_service=+ep' kinectfs
 

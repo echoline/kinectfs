@@ -78,15 +78,6 @@ main(int argc, char **argv) {
 		o = open(argv[1], O_RDONLY);
 		if (o < 0)
 			return -1;
-
-		if (fstat(o, &statbuf) != 0)
-			return -1;
-		printf("--ffserver\r\nContent-Type: image/jpeg\r\nContent-Length: %ld\r\n\r\n", statbuf.st_size);
-		while ((rc = read(o, bbuf, width*height*4)) > 0)
-			write(1, bbuf, rc);
-
-		fflush(stdout);
-		lseek(o, 0, SEEK_SET);
 		file = fdopen(o, "rb");
 
 		cinfo.err = jpeg_std_error(&jerr);
