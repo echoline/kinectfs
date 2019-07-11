@@ -1,17 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <fcntl.h>
  
 int
 main(int argc, char **argv) {
-	int s, x, y, o, n;
+	int o;
 	int rc;
-	unsigned char *buf;
-	unsigned char *bbuf;
-	FILE *file;
+	unsigned char *bbuf = malloc(640*480*4);
 	struct stat statbuf;
 
 	if (argc != 2) {
@@ -33,8 +30,6 @@ main(int argc, char **argv) {
 
 		fflush(stdout);
 		close(o);
-
-		usleep(250 * 1000);
 	}
 	free(bbuf);
 

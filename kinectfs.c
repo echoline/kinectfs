@@ -375,7 +375,8 @@ audio_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 void
 video_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
-	pthread_mutex_lock(&bufmutex);
+	if (pthread_mutex_trylock(&bufmutex) != 0)
+		return;
 	rgbback = rgbbuf;
 	freenect_set_video_buffer(dev, rgbback);
 	rgbbuf = buf;
@@ -384,7 +385,8 @@ video_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
 
 void
 depth_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
-	pthread_mutex_lock(&bufmutex);
+	if (pthread_mutex_trylock(&bufmutex) != 0)
+		return;
 	depthback = depthbuf;
 	freenect_set_depth_buffer(dev, depthback);
 	depthbuf = buf;
