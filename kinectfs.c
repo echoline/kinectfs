@@ -24,7 +24,12 @@ unsigned char *rgbbuf;
 unsigned char *rgbback;
 unsigned char *depthbuf;
 unsigned char *depthback;
-pthread_mutex_t bufmutex;
+pthread_mutex_t rgbmutex;
+pthread_cond_t rgbcond;
+unsigned char rgbvalid = 0;
+pthread_mutex_t depthmutex;
+pthread_cond_t depthcond;
+unsigned char depthvalid = 0;
 pthread_mutex_t audiomutex;
 pthread_cond_t audiocond;
 
@@ -375,22 +380,24 @@ audio_callback(freenect_device *dev, int num_samples, int32_t *mic0,
 
 void
 video_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
-	if (pthread_mutex_trylock(&bufmutex) != 0)
-		return;
+	pthread_mutex_lock(&rgbmutex);
 	rgbback = rgbbuf;
 	freenect_set_video_buffer(dev, rgbback);
 	rgbbuf = buf;
-	pthread_mutex_unlock(&bufmutex);
+	rgbvalid = 1;
+	pthread_cond_signal(&rgbcond);
+	pthread_mutex_unlock(&rgbmutex);
 }
 
 void
 depth_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
-	if (pthread_mutex_trylock(&bufmutex) != 0)
-		return;
+	pthread_mutex_lock(&depthmutex);
 	depthback = depthbuf;
 	freenect_set_depth_buffer(dev, depthback);
 	depthbuf = buf;
-	pthread_mutex_unlock(&bufmutex);
+	depthvalid = 1;
+	pthread_cond_signal(&depthcond);
+	pthread_mutex_unlock(&depthmutex);
 }
 
 #ifdef USE_JPEG
@@ -655,8 +662,6 @@ static void fs_open(Ixp9Req *r)
 #endif
 	) {
 		if (istime(&rgbdlast, 1.0/30.0)) {
-			pthread_mutex_lock(&bufmutex);
-
 			rgbpnm.width = KWIDTH;
 			rgbpnm.height = KHEIGHT;
 			rgbpnm.hdrlen = 15;
@@ -692,6 +697,9 @@ static void fs_open(Ixp9Req *r)
 			bwpnm.length = bwpnm.width*bwpnm.height*bwpnm.components+bwpnm.hdrlen;
 			memcpy(bwpnm.image, "P5\n640 480\n255\n", bwpnm.hdrlen);
 
+			pthread_mutex_lock(&rgbmutex);
+			while (rgbvalid == 0)
+				pthread_cond_wait(&rgbcond, &rgbmutex);
 			if(SCALE) for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				for (l = 0; l < 3; l++) {
 					j = 0;
@@ -703,6 +711,8 @@ static void fs_open(Ixp9Req *r)
 				for (l = 0; l < 3; l++)
 					rgbpnm.image[rgbpnm.hdrlen+((y*KWIDTH)+x)*3+l] = rgbbuf[(y*KWIDTH+x)*3+l];
 			}
+			rgbvalid = 0;
+			pthread_mutex_unlock(&rgbmutex);
 			// need black and white first for edges
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
@@ -710,6 +720,9 @@ static void fs_open(Ixp9Req *r)
 				bwpnm.image[j + bwpnm.hdrlen] = c;
 				extrapnm.image[j*3 + extrapnm.hdrlen] = c;
 			}
+			pthread_mutex_lock(&depthmutex);
+			while (depthvalid == 0)
+				pthread_cond_wait(&depthcond, &depthmutex);
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
 				l = j + bwpnm.hdrlen;
@@ -743,7 +756,8 @@ static void fs_open(Ixp9Req *r)
 				k >>= 4;
 				extrapnm.image[(y * KWIDTH + x) * 3 + 2 + extrapnm.hdrlen] = depthpnm.image[l] = k == 0? 0: 255 - k;
 			}
-			pthread_mutex_unlock(&bufmutex);
+			depthvalid = 0;
+			pthread_mutex_unlock(&depthmutex);
 #ifdef USE_JPEG
 			copyimg(&rgbpnm, &rgbjpg);
 			compressjpg(&rgbjpg);
@@ -1380,7 +1394,10 @@ main(int argc, char *argv[]) {
 		}
 	}
 
-	pthread_mutex_init(&bufmutex, NULL);
+	pthread_mutex_init(&rgbmutex, NULL);
+	pthread_cond_init(&rgbcond, NULL);
+	pthread_mutex_init(&depthmutex, NULL);
+	pthread_cond_init(&depthcond, NULL);
 	pthread_mutex_init(&audiomutex, NULL);
 	pthread_cond_init(&audiocond, NULL);
 
@@ -1488,6 +1505,8 @@ main(int argc, char *argv[]) {
 	edgeimg.image = calloc(1, edgepnm.length*2);
 	bwimg.image = calloc(1, bwpnm.length*2);
 #endif
+
+	ixp_pthread_init();
 
 	fd = ixp_announce (argv[addr]);
 	if (fd < 0) {
