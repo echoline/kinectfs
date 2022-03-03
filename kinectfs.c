@@ -221,7 +221,7 @@ int rgbmode = 0;
 
 #ifdef USE_AUDIO
 unsigned long long audiohead[4] = { 0, 0, 0, 0 };
-#define AUDIO_BUFFER_SIZE (1024*128)
+#define AUDIO_BUFFER_SIZE 8192
 unsigned char audio[4][AUDIO_BUFFER_SIZE];
 
 #ifdef USE_OGG
@@ -243,8 +243,8 @@ pthread_loop(void *aux)
 	}
 }
 
-//#define debug(...) fprintf (stderr, __VA_ARGS__);
-#define debug(...) {};
+#define debug(...) fprintf (stderr, __VA_ARGS__);
+//#define debug(...) {};
 
 int
 dostat(int path, IxpStat *stat) {
@@ -385,7 +385,7 @@ video_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
 	freenect_set_video_buffer(dev, rgbback);
 	rgbbuf = buf;
 	rgbvalid = 1;
-	pthread_cond_signal(&rgbcond);
+//	pthread_cond_signal(&rgbcond);
 	pthread_mutex_unlock(&rgbmutex);
 }
 
@@ -396,7 +396,7 @@ depth_callback (freenect_device *dev, void *buf, uint32_t timestamp) {
 	freenect_set_depth_buffer(dev, depthback);
 	depthbuf = buf;
 	depthvalid = 1;
-	pthread_cond_signal(&depthcond);
+//	pthread_cond_signal(&depthcond);
 	pthread_mutex_unlock(&depthmutex);
 }
 
@@ -407,8 +407,8 @@ compressjpg(FrnctImg *img)
 	struct jpeg_compress_struct cinfo;
 	struct jpeg_error_mgr jerr;
 	JSAMPROW row_pointer[1];
-	unsigned char *buf;
-	size_t buflen = 0;
+	unsigned char *buf = NULL;
+	unsigned long buflen = 0;
 
 	cinfo.err = jpeg_std_error( &jerr );
 	jpeg_create_compress(&cinfo);
@@ -420,6 +420,7 @@ compressjpg(FrnctImg *img)
 
 	jpeg_mem_dest( &cinfo, &buf, &buflen );
 	jpeg_set_defaults( &cinfo );
+	jpeg_set_quality(&cinfo, 100, TRUE);
 
 	jpeg_start_compress( &cinfo, TRUE );
 	while( cinfo.next_scanline < cinfo.image_height ) {
@@ -477,7 +478,7 @@ compressplan9(FrnctImg *img)
 	int ndump;			      /* length of dump accumulator */
 	int chunk, ncblock;
 	unsigned char *p, *q, *s, *es, *t;
-	static unsigned char *buffer = malloc(KWIDTH*2*KHEIGHT*2*4);
+	unsigned char *buffer = malloc(KWIDTH*2*KHEIGHT*2*4);
 	int y, len;
 
 	bpl = img->width * img->components;
@@ -645,7 +646,7 @@ static void fs_open(Ixp9Req *r)
 		return;
 	}
 
-	debug ("fs_open %s %lu\n", paths[path], r->fid->fid);
+	debug ("fs_open %s %u\n", paths[path], r->fid->fid);
 
 	r->fid->aux = newfidaux(path);
 	f = r->fid->aux;
@@ -698,8 +699,8 @@ static void fs_open(Ixp9Req *r)
 			memcpy(bwpnm.image, "P5\n640 480\n255\n", bwpnm.hdrlen);
 
 			pthread_mutex_lock(&rgbmutex);
-			while (rgbvalid == 0)
-				pthread_cond_wait(&rgbcond, &rgbmutex);
+//			while (rgbvalid == 0)
+//				pthread_cond_wait(&rgbcond, &rgbmutex);
 			if(SCALE) for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				for (l = 0; l < 3; l++) {
 					j = 0;
@@ -721,8 +722,8 @@ static void fs_open(Ixp9Req *r)
 				extrapnm.image[j*3 + extrapnm.hdrlen] = c;
 			}
 			pthread_mutex_lock(&depthmutex);
-			while (depthvalid == 0)
-				pthread_cond_wait(&depthcond, &depthmutex);
+//			while (depthvalid == 0)
+//				pthread_cond_wait(&depthcond, &depthmutex);
 			for (x = 0; x < KWIDTH; x++) for (y = 0; y < KHEIGHT; y++) {
 				j = y * KWIDTH + x;
 				l = j + bwpnm.hdrlen;
@@ -758,38 +759,6 @@ static void fs_open(Ixp9Req *r)
 			}
 			depthvalid = 0;
 			pthread_mutex_unlock(&depthmutex);
-#ifdef USE_JPEG
-			copyimg(&rgbpnm, &rgbjpg);
-			compressjpg(&rgbjpg);
-
-			copyimg(&depthpnm, &depthjpg);
-			compressjpg(&depthjpg);
-
-			copyimg(&extrapnm, &extrajpg);
-			compressjpg(&extrajpg);
-
-			copyimg(&edgepnm, &edgejpg);
-			compressjpg(&edgejpg);
-
-			copyimg(&bwpnm, &bwjpg);
-			compressjpg(&bwjpg);
-#endif
-#ifdef USE_PLAN9
-			copyimg(&rgbpnm, &rgbimg);
-			compressplan9(&rgbimg);
-
-			copyimg(&depthpnm, &depthimg);
-			compressplan9(&depthimg);
-
-			copyimg(&extrapnm, &extraimg);
-			compressplan9(&extraimg);
-
-			copyimg(&edgepnm, &edgeimg);
-			compressplan9(&edgeimg);
-
-			copyimg(&bwpnm, &bwimg);
-			compressplan9(&bwimg);
-#endif
 		}
 
 		switch(path){
@@ -810,35 +779,55 @@ static void fs_open(Ixp9Req *r)
 			break;
 #ifdef USE_JPEG
 		case Qrgbjpg:
+			copyimg(&rgbpnm, &rgbjpg);
+			compressjpg(&rgbjpg);
 			copyimg(&rgbjpg, f->data);
 			break;
 		case Qdepthjpg:
+			copyimg(&depthpnm, &depthjpg);
+			compressjpg(&depthjpg);
 			copyimg(&depthjpg, f->data);
 			break;
 		case Qextrajpg:
+			copyimg(&extrapnm, &extrajpg);
+			compressjpg(&extrajpg);
 			copyimg(&extrajpg, f->data);
 			break;
 		case Qedgejpg:
+			copyimg(&edgepnm, &edgejpg);
+			compressjpg(&edgejpg);
 			copyimg(&edgejpg, f->data);
 			break;
 		case Qbwjpg:
+			copyimg(&bwpnm, &bwjpg);
+			compressjpg(&bwjpg);
 			copyimg(&bwjpg, f->data);
 			break;
 #endif
 #ifdef USE_PLAN9
 		case Qrgb:
+			copyimg(&rgbpnm, &rgbimg);
+			compressplan9(&rgbimg);
 			copyimg(&rgbimg, f->data);
 			break;
 		case Qdepth:
+			copyimg(&depthpnm, &depthimg);
+			compressplan9(&depthimg);
 			copyimg(&depthimg, f->data);
 			break;
 		case Qextra:
+			copyimg(&extrapnm, &extraimg);
+			compressplan9(&extraimg);
 			copyimg(&extraimg, f->data);
 			break;
 		case Qedge:
+			copyimg(&edgepnm, &edgeimg);
+			compressplan9(&edgeimg);
 			copyimg(&edgeimg, f->data);
 			break;
 		case Qbw:
+			copyimg(&bwpnm, &bwimg);
+			compressplan9(&bwimg);
 			copyimg(&bwimg, f->data);
 			break;
 #endif
@@ -863,7 +852,7 @@ static void fs_walk(Ixp9Req *r)
 		return;
 	}
 
-	debug ("fs_walk from %s fid:%lu newfid:%lu\n", paths[path], r->fid->fid, r->newfid->fid);
+	debug ("fs_walk from %s fid:%u newfid:%u\n", paths[path], r->fid->fid, r->newfid->fid);
 
 	if (r->ifcall.twalk.nwname == 0 || strcmp(r->ifcall.twalk.wname[0], ".") == 0) {
 		ixp_respond (r, NULL);
@@ -912,7 +901,7 @@ static void fs_read(Ixp9Req *r)
 	unsigned char ogg[AUDIO_BUFFER_SIZE];
 #endif
 
-	debug ("fs_read read:%llu offset:%lu\n", r->ifcall.tread.offset, f->offset);
+	debug ("fs_read read:%lu\n", r->ifcall.tread.offset);
 
 	path = r->fid->qid.path;
 
@@ -920,9 +909,6 @@ static void fs_read(Ixp9Req *r)
 		ixp_respond(r, "file not found");
 		return;
 	}
-
-	if (r->ifcall.tread.offset == 0)
-		f->offset = 0;
 
 	switch (path) {
 	case Qroot:
@@ -996,31 +982,33 @@ static void fs_read(Ixp9Req *r)
 	case Qmic3:
 		i = path - Qmic0;
 
-		if (r->ifcall.tread.offset == 0)
+		if (f->offset == 0)
 			f->offset = audiohead[i];
 
 		pthread_mutex_lock(&audiomutex);
-		while ((l = audiohead[i] - f->offset) == 0)
+		while ((n = (audiohead[i] - f->offset)) == 0)
 			pthread_cond_wait(&audiocond, &audiomutex);
-		n = f->offset & (AUDIO_BUFFER_SIZE-1);
-		size = AUDIO_BUFFER_SIZE - n;
-		if (l > r->ifcall.tread.count)
-			l = r->ifcall.tread.count;
-		buf = malloc(l);
-		if (size >= l)
-			memcpy(buf, audio[i] + n, l);
+		if (n > r->ifcall.tread.count)
+			n = r->ifcall.tread.count;
+		l = AUDIO_BUFFER_SIZE - n % AUDIO_BUFFER_SIZE;
+		size = AUDIO_BUFFER_SIZE - l;
+		debug ("fs_read offset:%llu l:%d n:%d size:%d\n", f->offset, l, n, size);
+		buf = malloc(n);
+		if ((l + n) <= AUDIO_BUFFER_SIZE)
+			memcpy(buf, audio[i] + l, n);
 		else {
-			memcpy(buf, audio[i] + n, size);
-			memcpy(buf + size, audio[i], l - size);
+			debug ("fs_read wrap\n");
+			memcpy(buf, audio[i] + l, size);
+			memcpy(buf + size, audio[i], n - size);
 		}
 		pthread_mutex_unlock(&audiomutex);
 
-		r->ofcall.rread.count = l;
+		r->ofcall.rread.count = n;
 		r->ofcall.rread.data = buf;
-
-		f->offset += l;
+		f->offset += n;
 
 		ixp_respond(r, NULL);
+		debug ("fs_read offset:%llu l:%d n:%d size:%d\n", f->offset, l, n, size);
 		return;
 #ifdef USE_OGG
 	case Qmics:
@@ -1185,7 +1173,7 @@ static void fs_stat(Ixp9Req *r)
 	char *buf;
 	int path = r->fid->qid.path;
 
-	debug ("fs_stat fid:%lu\n", r->fid->fid);
+	debug ("fs_stat fid:%u\n", r->fid->fid);
 
 	if (path < 0 || path >= Npaths) {
 		ixp_respond(r, "file not found");
@@ -1283,14 +1271,14 @@ static void fs_write(Ixp9Req *r)
 
 static void fs_clunk(Ixp9Req *r)
 {
-	debug ("fs_clunk fid:%lu\n", r->fid->fid);
+	debug ("fs_clunk fid:%u\n", r->fid->fid);
 
 	ixp_respond (r, NULL);
 }
 
 static void fs_flush(Ixp9Req *r)
 {
-	debug ("fs_flush fid:%lu\n", r->fid->fid);
+	debug ("fs_flush fid:%u\n", r->fid->fid);
 
 	ixp_respond(r, NULL);
 }
@@ -1303,7 +1291,7 @@ static void fs_attach(Ixp9Req *r)
 	r->fid->aux = newfidaux(0);
 	r->ofcall.rattach.qid = r->fid->qid;
 
-	debug ("fs_attach fid:%lu\n", r->fid->fid);
+	debug ("fs_attach fid:%u\n", r->fid->fid);
 
 	ixp_respond (r, NULL);
 }
