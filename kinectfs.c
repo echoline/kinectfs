@@ -43,6 +43,7 @@ enum {
 	Qextrapnm,
 	Qedgepnm,
 	Qbwpnm,
+	Qinputs,
 #ifdef USE_JPEG
 	Qrgbjpg,
 	Qdepthjpg,
@@ -69,7 +70,7 @@ enum {
 	Npaths,
 };
 char *paths[] = { "/", "tilt", "led", "rgb.pnm", "depth.pnm", "extra.pnm",
-	"edge.pnm", "bw.pnm",
+	"edge.pnm", "bw.pnm", "inputs.bit",
 #ifdef USE_JPEG
 	"rgb.jpg", "depth.jpg", "extra.jpg", "edge.jpg", "bw.jpg",
 #endif
@@ -101,6 +102,7 @@ static FrnctImg depthpnm;
 static FrnctImg extrapnm;
 static FrnctImg edgepnm;
 static FrnctImg bwpnm;
+static FrnctImg inputs;
 #ifdef USE_JPEG
 static FrnctImg rgbjpg;
 static FrnctImg depthjpg;
@@ -129,7 +131,7 @@ static IxpServer server;
 #ifdef USE_OGG
 typedef struct _OggInfo {
 	ogg_stream_state os;
-	ogg_page         og;
+	ogg_page	 og;
 	ogg_packet       op;
 	vorbis_info      vi;
 	vorbis_comment   vc;
@@ -177,7 +179,7 @@ newfidaux(int path) {
 
 	ret = calloc (1, sizeof(FidAux));
 	if (path == Qrgbpnm || path == Qdepthpnm || path == Qextrapnm
-	  || path == Qedgepnm || path == Qbwpnm
+	  || path == Qedgepnm || path == Qbwpnm || path == Qinputs
 #ifdef USE_JPEG
 	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
 	  || path == Qedgejpg || path == Qbwjpg
@@ -243,8 +245,8 @@ pthread_loop(void *aux)
 	}
 }
 
-#define debug(...) fprintf (stderr, __VA_ARGS__);
-//#define debug(...) {};
+//#define debug(...) fprintf (stderr, __VA_ARGS__);
+#define debug(...) {};
 
 int
 dostat(int path, IxpStat *stat) {
@@ -277,6 +279,9 @@ dostat(int path, IxpStat *stat) {
 		break;
 	case Qbwpnm:
 		stat->length = bwpnm.length;
+		break;
+	case Qinputs:
+		stat->length = inputs.length;
 		break;
 #ifdef USE_JPEG
 	case Qrgbjpg:
@@ -440,7 +445,6 @@ compressjpg(FrnctImg *img)
 }
 #endif
 
-#ifdef USE_PLAN9
 /** Copywritten Plan 9 stuff */
 
 #define CHUNK   8000
@@ -618,7 +622,6 @@ ErrOut:
 	free(hash);
 	free(outbuf);
 }
-#endif
 
 static void
 copyimg(FrnctImg *in, FrnctImg *out)
@@ -631,6 +634,68 @@ copyimg(FrnctImg *in, FrnctImg *out)
 	out->components = in->components;
 }
 
+static unsigned char*
+halfscalealloc(int width, int height, unsigned char *data) {
+	int length = width * height;
+	int newlength = length / 4;
+	unsigned char *newdata;
+	int w = width / 2, h = height / 2;
+	int x, y;
+
+	if (width & 1 || height & 1) {
+		return NULL;
+	}
+
+	newdata = malloc(newlength);
+	if (newdata == NULL)
+		return NULL;
+
+	for (x = 0; x < w; x++) for(y = 0; y < h; y++) {
+		newdata[y*w+x] = (data[((y*2)*width+(x*2))] +
+				data[((y*2+1)*width+(x*2+1))] +
+				data[((y*2)*width+(x*2+1))] +
+				data[((y*2+1)*width+(x*2))]) / 4;
+	}
+
+	return newdata;
+}
+
+static unsigned char*
+middleextract(int width, int height, unsigned char *data) {
+	unsigned char *ret;
+	int hwidth, hheight, x, y, i, j, m, n;
+	if (width < 20 || height < 15)
+		return NULL;
+	ret = malloc(20 * 15);
+	if (height == 15 && width == 20) {
+		memcpy(ret, data, width * height);
+	} else {
+		hwidth = width / 2;
+		hheight = height / 2;
+		x = hwidth - 10;
+		m = x + 20;
+		y = hheight - 7;
+		n = y + 15;
+		if (height & 1 && width & 1) {
+			fprintf(stderr, "unimplemented\n");
+			free(ret);
+			return NULL;
+		} else if (height & 1) {
+			for (i = y; i < n; i++) for(j = x; j < m; j++)
+				ret[(i-y)*20+(j-x)] = data[(i*width+j)];
+		} else if (width & 1) {
+			fprintf(stderr, "unimplemented\n");
+			free(ret);
+			return NULL;
+		} else {
+			y--; n--;
+			for (i = y; i < n; i++) for(j = x; j < m; j++)
+				ret[(i-y)*20+(j-x)] = (data[(i*width+j)]+data[((i+1)*width+j)])>>1;
+		}
+	}
+	return ret;
+}
+
 static void fs_open(Ixp9Req *r)
 {
 	FidAux *f;
@@ -639,6 +704,7 @@ static void fs_open(Ixp9Req *r)
 	unsigned short s;
 	int j, k, l, x, xm, xp, y, ym, yp;
 	int path;
+	unsigned char *bufa, *bufb, *bufc, *bufd;
 
 	path = r->fid->qid.path;
 	if (path < 0 || path >= Npaths) {
@@ -652,7 +718,7 @@ static void fs_open(Ixp9Req *r)
 	f = r->fid->aux;
 
 	if (path == Qrgbpnm || path == Qdepthpnm || path == Qextrapnm
-	  || path == Qedgepnm || path == Qbwpnm
+	  || path == Qedgepnm || path == Qbwpnm || path == Qinputs
 #ifdef USE_JPEG
 	  || path == Qrgbjpg || path == Qdepthjpg || path == Qextrajpg
 	  || path == Qedgejpg || path == Qbwjpg
@@ -697,6 +763,13 @@ static void fs_open(Ixp9Req *r)
 			bwpnm.components = 1;
 			bwpnm.length = bwpnm.width*bwpnm.height*bwpnm.components+bwpnm.hdrlen;
 			memcpy(bwpnm.image, "P5\n640 480\n255\n", bwpnm.hdrlen);
+
+			inputs.width = 20*6;
+			inputs.height = 15*2;
+			inputs.hdrlen = 60;
+			inputs.components = 1;
+			inputs.length = inputs.width*inputs.height*inputs.components+inputs.hdrlen;
+			sprintf(inputs.image, "%11s %11d %11d %11d %11d ", "k8", 0, 0, 6*20, 2*15);
 
 			pthread_mutex_lock(&rgbmutex);
 //			while (rgbvalid == 0)
@@ -776,6 +849,33 @@ static void fs_open(Ixp9Req *r)
 			break;
 		case Qbwpnm:
 			copyimg(&bwpnm, f->data);
+			break;
+		case Qinputs:
+			bufc = malloc(640*480);
+			bufd = malloc(640*480);
+			for (x = 0; x < 640; x++) for (y = 0; y < 480; y++) {
+				bufc[y*640+x] = extrapnm.image[extrapnm.hdrlen+(y*640+x)*3+1];
+				bufd[y*640+x] = extrapnm.image[extrapnm.hdrlen+(y*640+x)*3+2];
+			}
+			for (j = 0; j < 6; j++) {
+				bufa = middleextract(640>>j, 480>>j, bufc);
+				bufb = middleextract(640>>j, 480>>j, bufd);
+				for (x = 0; x < 20; x++) for (y = 0; y < 15; y++)
+					inputs.image[inputs.hdrlen+j*20+y*120+x] = bufa[y*20+x];
+				for (x = 0; x < 20; x++) for (y = 0; y < 15; y++)
+					inputs.image[inputs.hdrlen+j*20+y*120+x+1800] = bufb[y*20+x];
+				free(bufa);
+				free(bufb);
+				bufa = halfscalealloc(640>>j, 480>>j, bufc);
+				bufb = halfscalealloc(640>>j, 480>>j, bufd);
+				free(bufc);
+				free(bufd);
+				bufc = bufa;
+				bufd = bufb;
+			}
+			free(bufc);
+			free(bufd);
+			copyimg(&inputs, f->data);
 			break;
 #ifdef USE_JPEG
 		case Qrgbjpg:
@@ -940,6 +1040,7 @@ static void fs_read(Ixp9Req *r)
 	case Qextrapnm:
 	case Qedgepnm:
 	case Qbwpnm:
+	case Qinputs:
 #ifdef USE_JPEG
 	case Qrgbjpg:
 	case Qdepthjpg:
@@ -1473,11 +1574,13 @@ main(int argc, char *argv[]) {
 	extrapnm.length = KWIDTH*KHEIGHT*3+15;
 	edgepnm.length = KWIDTH*KHEIGHT*1+15;
 	bwpnm.length = KWIDTH*KHEIGHT*1+15;
+	inputs.length = 20*15*6*2;
 	rgbpnm.image = calloc(1, rgbpnm.length);
 	depthpnm.image = calloc(1, depthpnm.length);
 	extrapnm.image = calloc(1, extrapnm.length);
 	edgepnm.image = calloc(1, edgepnm.length);
 	bwpnm.image = calloc(1, bwpnm.length);
+	inputs.image = calloc(1, inputs.length + 60);
 #ifdef USE_JPEG
 	rgbjpg.image = calloc(1, rgbpnm.length);
 	depthjpg.image = calloc(1, depthpnm.length);
